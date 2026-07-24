@@ -25,39 +25,45 @@ namespace LiraSlabZones.Revit2023
             };
             return dlg.ShowDialog() == DialogResult.OK ? dlg.FileName : null;
         }
-
-        public static string? FindFamilyOnODrive(string familyFileName) =>
-            SolutionPaths.FindFamilyOnODrive(familyFileName);
     }
 
+    /// <summary>
+    /// Только поиск семейств, уже загруженных в документ.
+    /// Подгрузка .rfa в проект запрещена.
+    /// </summary>
     internal static class FamilyLoader
     {
-        /// <summary>Типоразмер семейства, уже загруженного в проект (без .rfa).</summary>
+        /// <summary>Типоразмер по точному имени семейства из проекта.</summary>
         public static FamilySymbol? FindSymbol(Document doc, string familyName)
         {
             if (doc == null || string.IsNullOrWhiteSpace(familyName))
                 return null;
 
-            var name = NormalizeFamilyName(familyName);
-            var symbols = new FilteredElementCollector(doc)
+            var name = AppConfig.StripRfa(familyName);
+            var match = new FilteredElementCollector(doc)
                 .OfClass(typeof(FamilySymbol))
                 .Cast<FamilySymbol>()
-                .Where(s => s.Family != null)
-                .ToList();
-
-            var match = symbols.FirstOrDefault(s =>
-                            s.FamilyName.Equals(name, StringComparison.OrdinalIgnoreCase)
-                            || s.Family.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-                        ?? symbols.FirstOrDefault(s =>
-                            s.FamilyName.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
-                            || name.IndexOf(s.FamilyName, StringComparison.OrdinalIgnoreCase) >= 0);
+                .FirstOrDefault(s =>
+                    s.Family != null
+                    && (s.FamilyName.Equals(name, StringComparison.OrdinalIgnoreCase)
+                        || s.Family.Name.Equals(name, StringComparison.OrdinalIgnoreCase)));
 
             if (match == null) return null;
             if (!match.IsActive) match.Activate();
             return match;
         }
 
-        /// <summary>Уникальные имена семейств в проекте (для выбора в UI).</summary>
+        public static FamilySymbol RequireFromProject(Document doc, string familyName)
+        {
+            var symbol = FindSymbol(doc, familyName);
+            if (symbol != null) return symbol;
+
+            throw new InvalidOperationException(
+                "Семейство «" + AppConfig.StripRfa(familyName) + "» не найдено в проекте Revit.\n" +
+                "Загрузите его в проект вручную (плагин семейства не подгружает).\n" +
+                "Имя можно изменить в настройках: " + AppConfig.UserConfigPath);
+        }
+
         public static List<string> ListFamilyNames(Document doc)
         {
             return new FilteredElementCollector(doc)
@@ -70,37 +76,29 @@ namespace LiraSlabZones.Revit2023
                 .ToList();
         }
 
-        /// <summary>
-        /// Найти семейство по имени в проекте; если нет — диалог выбора из загруженных.
-        /// </summary>
+        /// <summary>Найти по имени; при отсутствии — диалог выбора из уже загруженных.</summary>
         public static FamilySymbol ResolveFromProject(Document doc, string? preferredFamilyName)
         {
-            var preferred = NormalizeFamilyName(preferredFamilyName ?? "");
+            var preferred = AppConfig.StripRfa(preferredFamilyName ?? "");
             if (!string.IsNullOrEmpty(preferred))
             {
                 var found = FindSymbol(doc, preferred);
                 if (found != null) return found;
             }
 
-            // Частое имя SUM-30 (в т.ч. вариант _R22)
-            var sum30 = FindSymbol(doc, "SUM-30")
-                        ?? FindSymbol(doc, "Зона дополнительного армирования");
-            if (sum30 != null) return sum30;
-
             var names = ListFamilyNames(doc);
             if (names.Count == 0)
                 throw new InvalidOperationException(
-                    "В проекте Revit нет загруженных семейств. Загрузите семейство зоны доп. армирования в проект.");
+                    "В проекте нет загруженных семейств.\n" +
+                    "Загрузите семейство зоны доп. армирования в проект вручную.");
 
             var picked = PickFamilyName(names, preferred);
             if (string.IsNullOrEmpty(picked))
                 throw new OperationCanceledException("Семейство не выбрано.");
 
-            return FindSymbol(doc, picked!)
-                   ?? throw new InvalidOperationException("Не удалось получить типоразмер семейства: " + picked);
+            return RequireFromProject(doc, picked!);
         }
 
-        /// <summary>Диалог выбора имени семейства из списка проекта.</summary>
         public static string? PickFamilyName(IReadOnlyList<string> familyNames, string? preferred = null)
         {
             if (familyNames == null || familyNames.Count == 0)
@@ -109,8 +107,8 @@ namespace LiraSlabZones.Revit2023
             using var form = new System.Windows.Forms.Form
             {
                 Text = "Семейство зоны доп. армирования",
-                Width = 520,
-                Height = 160,
+                Width = 560,
+                Height = 170,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 StartPosition = FormStartPosition.CenterScreen,
                 MaximizeBox = false,
@@ -119,10 +117,10 @@ namespace LiraSlabZones.Revit2023
 
             var label = new System.Windows.Forms.Label
             {
-                Text = "Выберите семейство из текущего проекта Revit:",
+                Text = "Семейство не найдено по имени из настроек. Выберите из проекта:",
                 Left = 12,
                 Top = 12,
-                Width = 480,
+                Width = 520,
                 AutoSize = false
             };
 
@@ -130,45 +128,18 @@ namespace LiraSlabZones.Revit2023
             {
                 Left = 12,
                 Top = 40,
-                Width = 480,
+                Width = 520,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             foreach (var n in familyNames)
                 combo.Items.Add(n);
 
-            var prefer = NormalizeFamilyName(preferred ?? "");
-            var idx = -1;
-            if (!string.IsNullOrEmpty(prefer))
-            {
-                for (int i = 0; i < combo.Items.Count; i++)
-                {
-                    var item = combo.Items[i]?.ToString() ?? "";
-                    if (item.Equals(prefer, StringComparison.OrdinalIgnoreCase)
-                        || item.IndexOf("SUM-30", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        idx = i;
-                        if (item.Equals(prefer, StringComparison.OrdinalIgnoreCase))
-                            break;
-                    }
-                }
-            }
-            if (idx < 0)
-            {
-                for (int i = 0; i < combo.Items.Count; i++)
-                {
-                    var item = combo.Items[i]?.ToString() ?? "";
-                    if (item.IndexOf("SUM-30", StringComparison.OrdinalIgnoreCase) >= 0
-                        || item.IndexOf("дополнительного армирования", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        idx = i;
-                        break;
-                    }
-                }
-            }
+            var prefer = AppConfig.StripRfa(preferred ?? "");
+            var idx = IndexOfPrefer(combo, prefer);
             combo.SelectedIndex = idx >= 0 ? idx : 0;
 
-            var ok = new System.Windows.Forms.Button { Text = "OK", DialogResult = DialogResult.OK, Left = 316, Top = 80, Width = 85 };
-            var cancel = new System.Windows.Forms.Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Left = 407, Top = 80, Width = 85 };
+            var ok = new System.Windows.Forms.Button { Text = "OK", DialogResult = DialogResult.OK, Left = 356, Top = 90, Width = 85 };
+            var cancel = new System.Windows.Forms.Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Left = 447, Top = 90, Width = 85 };
             form.Controls.Add(label);
             form.Controls.Add(combo);
             form.Controls.Add(ok);
@@ -181,35 +152,27 @@ namespace LiraSlabZones.Revit2023
                 : null;
         }
 
-        public static string NormalizeFamilyName(string nameOrFile)
+        private static int IndexOfPrefer(System.Windows.Forms.ComboBox combo, string prefer)
         {
-            var s = (nameOrFile ?? "").Trim();
-            if (s.EndsWith(".rfa", StringComparison.OrdinalIgnoreCase))
-                s = Path.GetFileNameWithoutExtension(s);
-            return s;
-        }
+            if (!string.IsNullOrEmpty(prefer))
+            {
+                for (int i = 0; i < combo.Items.Count; i++)
+                {
+                    var item = combo.Items[i]?.ToString() ?? "";
+                    if (item.Equals(prefer, StringComparison.OrdinalIgnoreCase))
+                        return i;
+                }
+            }
 
-        /// <summary>Устарело: загрузка из файла. Оставлено для совместимости гнутых семейств при наличии .rfa.</summary>
-        public static FamilySymbol EnsureSymbol(Document doc, string familyPath, string familyName)
-        {
-            var existing = FindSymbol(doc, familyName)
-                           ?? FindSymbol(doc, Path.GetFileNameWithoutExtension(familyPath));
-            if (existing != null)
-                return existing;
+            for (int i = 0; i < combo.Items.Count; i++)
+            {
+                var item = combo.Items[i]?.ToString() ?? "";
+                if (item.IndexOf("SUM-30", StringComparison.OrdinalIgnoreCase) >= 0
+                    || item.IndexOf("дополнительного армирования", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return i;
+            }
 
-            if (!File.Exists(familyPath))
-                throw new FileNotFoundException(
-                    "Семейство не найдено в проекте и файл отсутствует: " + familyName, familyPath);
-
-            if (!doc.LoadFamily(familyPath, out var family) || family == null)
-                throw new InvalidOperationException("Не удалось загрузить семейство: " + familyPath);
-
-            var symbolIds = family.GetFamilySymbolIds();
-            var symbol = symbolIds.Select(id => doc.GetElement(id)).OfType<FamilySymbol>().FirstOrDefault()
-                         ?? throw new InvalidOperationException("В семействе нет типоразмеров: " + family.Name);
-
-            if (!symbol.IsActive) symbol.Activate();
-            return symbol;
+            return -1;
         }
     }
 }

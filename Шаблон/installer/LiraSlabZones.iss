@@ -38,7 +38,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Ярлык PreviewHost на рабочем столе"; GroupDescription: "Дополнительно:"; Flags: unchecked
 
 [Files]
-; Данные приложения (config / families / output)
+; Данные приложения (DefaultSettings.cfg / output)
 Source: "..\dist\stage\data\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; PreviewHost (опциональный просмотр без Revit)
@@ -82,7 +82,6 @@ begin
   begin
     ForceDirectories(ExpandConstant('{app}\output'));
     ForceDirectories(ExpandConstant('{app}\config'));
-    ForceDirectories(ExpandConstant('{app}\families'));
     if not WriteAddinManifest then
       MsgBox('Не удалось записать LiraSlabZones.addin. Проверьте права на %APPDATA%.', mbError, MB_OK);
   end;

@@ -29,10 +29,18 @@ namespace LiraSlabZones.Revit2023
                 }
 
                 var analysis = SlabZoneAnalyzer.LoadJson(jsonPath!);
+                var settings = AppConfig.LoadEffectiveSettings();
+                // имена семейств — из пользовательского/дефолтного cfg
+                analysis.Settings.FamilyStraight = settings.FamilyStraight;
+                analysis.Settings.FamilyL = settings.FamilyL;
+                analysis.Settings.FamilyPEqual = settings.FamilyPEqual;
+                analysis.Settings.FamilyPDiff = settings.FamilyPDiff;
+                analysis.Settings.FamilyBentStick = settings.FamilyBentStick;
+
                 FamilySymbol symbol;
                 try
                 {
-                    symbol = FamilyLoader.ResolveFromProject(doc, analysis.Settings.FamilyName);
+                    symbol = FamilyLoader.ResolveFromProject(doc, analysis.Settings.FamilyStraight);
                 }
                 catch (OperationCanceledException)
                 {
@@ -40,8 +48,8 @@ namespace LiraSlabZones.Revit2023
                     return Result.Cancelled;
                 }
 
-                analysis.Settings.FamilyName = symbol.FamilyName;
-                analysis.Settings.FamilyFileName = symbol.FamilyName + ".rfa";
+                analysis.Settings.FamilyStraight = symbol.FamilyName;
+                AppConfig.SaveUserSettings(analysis.Settings);
 
                 int placed;
                 using (var tx = new Transaction(doc, "Раскладка зон доп.армирования (ЛИРА)"))
@@ -55,8 +63,8 @@ namespace LiraSlabZones.Revit2023
                 TaskDialog.Show("LiraSlabZones",
                     $"Размещено экземпляров: {placed}\n" +
                     $"Зон в JSON: {analysis.Zones.Count}\n" +
-                    $"Семейство (из проекта): {symbol.FamilyName}\n\n" +
-                    "Сопоставление контура с моделью выполните вручную в Revit (без привязки к осям).");
+                    $"Семейство (из проекта): {symbol.FamilyName}\n" +
+                    $"User cfg: {AppConfig.UserConfigPath}");
 
                 return Result.Succeeded;
             }
@@ -80,18 +88,14 @@ namespace LiraSlabZones.Revit2023
                             ?? throw new InvalidOperationException("Нет активного документа Revit.");
                 var doc = uiDoc.Document;
                 var root = PathResolver.FindSolutionRoot();
-                var configPath = Path.Combine(root, "config", "settings.json");
                 var outputPath = Path.Combine(root, "output", "slab_zones.json");
 
-                if (!File.Exists(configPath))
-                    AnalysisSettingsStore.Save(configPath, new AnalysisSettings());
-
-                var settings = AnalysisSettingsStore.LoadOrDefault(configPath);
+                var settings = AppConfig.LoadEffectiveSettings();
 
                 FamilySymbol symbol;
                 try
                 {
-                    symbol = FamilyLoader.ResolveFromProject(doc, settings.FamilyName);
+                    symbol = FamilyLoader.ResolveFromProject(doc, settings.FamilyStraight);
                 }
                 catch (OperationCanceledException)
                 {
@@ -99,9 +103,8 @@ namespace LiraSlabZones.Revit2023
                     return Result.Cancelled;
                 }
 
-                settings.FamilyName = symbol.FamilyName;
-                settings.FamilyFileName = symbol.FamilyName + ".rfa";
-                AnalysisSettingsStore.Save(configPath, settings);
+                settings.FamilyStraight = symbol.FamilyName;
+                AppConfig.SaveUserSettings(settings);
 
                 var analyzer = new SlabZoneAnalyzer();
                 var analysis = analyzer.Analyze(null, settings);

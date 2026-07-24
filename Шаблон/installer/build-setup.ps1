@@ -16,7 +16,6 @@ Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     "addin",
     "tools",
     "data\config",
-    "data\families",
     "data\output"
 ) | ForEach-Object { New-Item -ItemType Directory -Force -Path (Join-Path $stage $_) | Out-Null }
 
@@ -25,28 +24,19 @@ $coreBin  = Join-Path $root "src\LiraSlabZones.Core\bin\x64\Release\net48"
 $previewBin = Join-Path $root "src\LiraSlabZones.PreviewHost\bin\x64\Release\net48"
 
 Copy-Item (Join-Path $revitBin "LiraSlabZones.Revit2023.dll") (Join-Path $stage "addin") -Force
-foreach ($name in @("LiraSlabZones.Core.dll","Newtonsoft.Json.dll","LiraSapr.Interop.dll","LiraResAPI.Interop.dll")) {
+foreach ($name in @("LiraSlabZones.Core.dll","Newtonsoft.Json.dll","LiraSapr.Interop.dll","LiraResAPI.Interop.dll","DefaultSettings.cfg")) {
     $src = Join-Path $coreBin $name
+    if (-not (Test-Path -LiteralPath $src)) { $src = Join-Path $revitBin $name }
+    if (-not (Test-Path -LiteralPath $src) -and $name -eq "DefaultSettings.cfg") { $src = Join-Path $root $name }
     if (Test-Path -LiteralPath $src) { Copy-Item $src (Join-Path $stage "addin") -Force }
 }
 
 Copy-Item (Join-Path $previewBin "LiraSlabZones.PreviewHost.exe") (Join-Path $stage "tools") -Force
 Copy-Item (Join-Path $previewBin "*.dll") (Join-Path $stage "tools") -Force
-
-@'
-{
-  "ConcreteClass": "B25",
-  "AutoLayout": true,
-  "GridCellMm": 300,
-  "FamilyName": "SUM-30-Зона дополнительного армирования"
-}
-'@ | Set-Content -LiteralPath (Join-Path $stage "data\config\settings.json") -Encoding UTF8
-
-$famDir = Join-Path $root "families"
-if (Test-Path -LiteralPath $famDir) {
-    Get-ChildItem -LiteralPath $famDir -Filter *.rfa | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stage "data\families\$($_.Name)") -Force
-    }
+$def = Join-Path $root "DefaultSettings.cfg"
+if (Test-Path -LiteralPath $def) {
+    Copy-Item $def (Join-Path $stage "data\DefaultSettings.cfg") -Force
+    Copy-Item $def (Join-Path $stage "addin\DefaultSettings.cfg") -Force
 }
 
 $stageMb = [math]::Round(((Get-ChildItem -LiteralPath $stage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 2)

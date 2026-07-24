@@ -20,12 +20,13 @@ namespace LiraSlabZones.Revit2023
             {
                 var uiApp = commandData.Application;
                 var uiDoc = uiApp.ActiveUIDocument;
+                var settings = AppConfig.LoadEffectiveSettings();
 
                 if (_window != null)
                 {
                     if (uiDoc != null)
                         _window.SetProjectFamilies(FamilyLoader.ListFamilyNames(uiDoc.Document),
-                            _window.SelectedFamilyName);
+                            settings.FamilyStraight);
                     _window.Activate();
                     return Result.Succeeded;
                 }
@@ -39,15 +40,14 @@ namespace LiraSlabZones.Revit2023
                 if (uiDoc != null)
                 {
                     var doc = uiDoc.Document;
-                    var preferred = new AnalysisSettings().FamilyName;
-                    _window.SetProjectFamilies(FamilyLoader.ListFamilyNames(doc), preferred);
+                    _window.SetProjectFamilies(FamilyLoader.ListFamilyNames(doc), settings.FamilyStraight);
                     _window.SetPlaceCallback(result => PlaceIntoRevit(doc, result));
                 }
 
                 _window.Closed += (_, __) => _window = null;
 
-                // Демо сразу — чтобы UI был наполнен как в SmartRebar
-                _window.LoadResult(DemoSlabFactory.Create());
+                var demo = DemoSlabFactory.Create(settings);
+                _window.LoadResult(demo);
                 _window.Show();
 
                 return Result.Succeeded;
@@ -62,13 +62,17 @@ namespace LiraSlabZones.Revit2023
 
         private static void PlaceIntoRevit(Document doc, AnalysisResult analysis)
         {
-            var familyName = analysis.Settings.FamilyName;
+            AppConfig.SaveUserSettings(analysis.Settings);
+
+            var familyName = analysis.Settings.FamilyStraight;
             var symbol = FamilyLoader.FindSymbol(doc, familyName);
             if (symbol == null)
             {
                 try
                 {
                     symbol = FamilyLoader.ResolveFromProject(doc, familyName);
+                    analysis.Settings.FamilyStraight = symbol.FamilyName;
+                    AppConfig.SaveUserSettings(analysis.Settings);
                 }
                 catch (OperationCanceledException)
                 {
@@ -76,11 +80,9 @@ namespace LiraSlabZones.Revit2023
                 }
             }
 
-            analysis.Settings.FamilyName = symbol.FamilyName;
-            analysis.Settings.FamilyFileName = symbol.FamilyName + ".rfa";
-
             var root = SolutionPaths.FindRoot();
             var outPath = Path.Combine(root, "output", "slab_zones.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
             SlabZoneAnalyzer.SaveJson(analysis, outPath);
 
             int placed;
@@ -95,6 +97,7 @@ namespace LiraSlabZones.Revit2023
             TaskDialog.Show("LiraSlabZones",
                 $"Размещено: {placed} из {analysis.Zones.Count}\n" +
                 $"Семейство (из проекта): {symbol.FamilyName}\n" +
+                $"User cfg: {AppConfig.UserConfigPath}\n" +
                 $"JSON: {outPath}");
         }
     }

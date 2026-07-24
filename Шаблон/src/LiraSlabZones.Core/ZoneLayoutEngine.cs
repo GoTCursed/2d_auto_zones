@@ -330,7 +330,7 @@ namespace LiraSlabZones.Core
                         WidthMm = widthMmFinal,
                         LengthMm = familyLen,
                         FamilyKind = familyKind,
-                        FamilyFileName = RebarTables.FamilyFileName(familyKind),
+                        FamilyFileName = settings.GetFamilyName(familyKind),
                         AsCoveredCm2PerM = asCovered,
                         ConcreteClass = concrete,
                         AlphaCoef = settings.AlphaCoef,

@@ -8,7 +8,6 @@ namespace LiraSlabZones.Revit2023
 {
     internal static class ZonePlacer
     {
-        // Футы — ТОЛЬКО здесь (граница Revit API).
         private const double MetersToFeet = UnitConversion.MetersToFeet;
 
         public static int Place(Document doc, FamilySymbol? defaultSymbol, AnalysisResult analysis)
@@ -16,36 +15,35 @@ namespace LiraSlabZones.Revit2023
             if (analysis.Zones == null || analysis.Zones.Count == 0)
                 return 0;
 
+            var settings = analysis.Settings ?? AppConfig.LoadEffectiveSettings();
             var level = FindNearestLevel(doc, analysis.Zones.First().LevelZM);
             int count = 0;
-            var straightKey = "__STRAIGHT__";
+            var cache = new Dictionary<string, FamilySymbol?>(StringComparer.OrdinalIgnoreCase);
 
-            // Прямые зоны → выбранное в проекте семейство; остальные — по имени из проекта.
-            foreach (var group in analysis.Zones.GroupBy(z =>
-                         z.FamilyKind == ZoneFamilyKind.Straight
-                             ? straightKey
-                             : (string.IsNullOrWhiteSpace(z.FamilyFileName)
-                                 ? RebarTables.StraightFamily
-                                 : z.FamilyFileName)))
+            foreach (var group in analysis.Zones.GroupBy(z => settings.GetFamilyName(z.FamilyKind)))
             {
-                FamilySymbol? symbol;
-                if (group.Key == straightKey)
+                var familyName = group.Key;
+                if (!cache.TryGetValue(familyName, out var symbol))
                 {
-                    symbol = defaultSymbol
-                             ?? FamilyLoader.FindSymbol(doc, analysis.Settings.FamilyName);
-                }
-                else
-                {
-                    var name = FamilyLoader.NormalizeFamilyName(group.Key);
-                    symbol = FamilyLoader.FindSymbol(doc, name) ?? defaultSymbol;
+                    symbol = FamilyLoader.FindSymbol(doc, familyName);
+                    if (symbol == null
+                        && defaultSymbol != null
+                        && familyName.Equals(settings.GetFamilyName(ZoneFamilyKind.Straight), StringComparison.OrdinalIgnoreCase))
+                        symbol = defaultSymbol;
+                    cache[familyName] = symbol;
                 }
 
-                if (symbol == null) continue;
+                if (symbol == null)
+                    throw new InvalidOperationException(
+                        "Семейство «" + familyName + "» не найдено в проекте Revit.\n" +
+                        "Плагин не подгружает .rfa — загрузите семейство в проект вручную.\n" +
+                        "Имя настраивается в " + AppConfig.UserConfigPath);
+
                 if (!symbol.IsActive) symbol.Activate();
 
                 foreach (var zone in group)
                 {
-                    if (PlaceOne(doc, symbol, level, zone, analysis.Settings))
+                    if (PlaceOne(doc, symbol, level, zone, settings))
                         count++;
                 }
             }
@@ -64,7 +62,6 @@ namespace LiraSlabZones.Revit2023
             var oy = settings.OffsetYM;
             var px = zone.Placement.X + ox;
             var py = zone.Placement.Y + oy;
-            // apply global rotation about origin of transform (simple)
             if (Math.Abs(settings.RotationDeg) > 1e-9)
             {
                 var rad = settings.RotationDeg * Math.PI / 180.0;
@@ -96,7 +93,6 @@ namespace LiraSlabZones.Revit2023
 
             if (inst == null) return false;
 
-            // Поворот вокруг Z: Direction Y → 90° (+ UI)
             var zoneRot = zone.Direction == ZoneDirection.Y ? 90.0 : 0.0;
             var totalRot = (settings.RotationDeg + zoneRot) * Math.PI / 180.0;
             if (Math.Abs(totalRot) > 1e-9)

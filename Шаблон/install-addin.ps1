@@ -16,6 +16,13 @@ $deploy = Join-Path $addinDir 'LiraSlabZones'
 New-Item -ItemType Directory -Force -Path $deploy | Out-Null
 Copy-Item -Path (Join-Path $src '*.dll') -Destination $deploy -Force
 
+$defCfg = Join-Path $root 'DefaultSettings.cfg'
+if (Test-Path -LiteralPath $defCfg) {
+    Copy-Item -LiteralPath $defCfg -Destination (Join-Path $deploy 'DefaultSettings.cfg') -Force
+} elseif (Test-Path -LiteralPath (Join-Path $src 'DefaultSettings.cfg')) {
+    Copy-Item -LiteralPath (Join-Path $src 'DefaultSettings.cfg') -Destination (Join-Path $deploy 'DefaultSettings.cfg') -Force
+}
+
 $targetDll = Join-Path $deploy 'LiraSlabZones.Revit2023.dll'
 $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -32,4 +39,5 @@ $xml = @"
 "@
 [System.IO.File]::WriteAllText((Join-Path $addinDir 'LiraSlabZones.addin'), $xml, [Text.UTF8Encoding]::new($false))
 Write-Host "OK: $deploy"
+Write-Host "User settings: $(Join-Path $addinDir 'LiraSlabZones.cfg')"
 Write-Host 'Restart Revit 2023.'

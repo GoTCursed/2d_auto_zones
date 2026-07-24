@@ -23,6 +23,9 @@ namespace LiraSlabZones.Revit2023
 
                 if (_window != null)
                 {
+                    if (uiDoc != null)
+                        _window.SetProjectFamilies(FamilyLoader.ListFamilyNames(uiDoc.Document),
+                            _window.SelectedFamilyName);
                     _window.Activate();
                     return Result.Succeeded;
                 }
@@ -35,7 +38,10 @@ namespace LiraSlabZones.Revit2023
 
                 if (uiDoc != null)
                 {
-                    _window.SetPlaceCallback(result => PlaceIntoRevit(uiDoc.Document, result));
+                    var doc = uiDoc.Document;
+                    var preferred = new AnalysisSettings().FamilyName;
+                    _window.SetProjectFamilies(FamilyLoader.ListFamilyNames(doc), preferred);
+                    _window.SetPlaceCallback(result => PlaceIntoRevit(doc, result));
                 }
 
                 _window.Closed += (_, __) => _window = null;
@@ -56,17 +62,24 @@ namespace LiraSlabZones.Revit2023
 
         private static void PlaceIntoRevit(Document doc, AnalysisResult analysis)
         {
-            var root = SolutionPaths.FindRoot();
-            var familyPath = Path.Combine(root, "families", analysis.Settings.FamilyFileName);
-            if (!File.Exists(familyPath))
+            var familyName = analysis.Settings.FamilyName;
+            var symbol = FamilyLoader.FindSymbol(doc, familyName);
+            if (symbol == null)
             {
-                var alt = SolutionPaths.FindFamilyOnODrive(analysis.Settings.FamilyFileName);
-                if (alt != null) familyPath = alt;
+                try
+                {
+                    symbol = FamilyLoader.ResolveFromProject(doc, familyName);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
 
-            if (!File.Exists(familyPath))
-                throw new FileNotFoundException("Семейство не найдено", analysis.Settings.FamilyFileName);
+            analysis.Settings.FamilyName = symbol.FamilyName;
+            analysis.Settings.FamilyFileName = symbol.FamilyName + ".rfa";
 
+            var root = SolutionPaths.FindRoot();
             var outPath = Path.Combine(root, "output", "slab_zones.json");
             SlabZoneAnalyzer.SaveJson(analysis, outPath);
 
@@ -74,13 +87,15 @@ namespace LiraSlabZones.Revit2023
             using (var tx = new Transaction(doc, "LiraSlabZones: зоны из превью"))
             {
                 tx.Start();
-                var symbol = FamilyLoader.EnsureSymbol(doc, familyPath, analysis.Settings.FamilyName);
+                if (!symbol.IsActive) symbol.Activate();
                 placed = ZonePlacer.Place(doc, symbol, analysis);
                 tx.Commit();
             }
 
             TaskDialog.Show("LiraSlabZones",
-                $"Размещено: {placed} из {analysis.Zones.Count}\nJSON: {outPath}");
+                $"Размещено: {placed} из {analysis.Zones.Count}\n" +
+                $"Семейство (из проекта): {symbol.FamilyName}\n" +
+                $"JSON: {outPath}");
         }
     }
 }

@@ -127,6 +127,17 @@
           </StackPanel>
         </GroupBox>
 
+        <GroupBox Header="Семейство зоны (из проекта Revit)">
+          <StackPanel>
+            <TextBlock TextWrapping="Wrap" Foreground="#6B7280" FontSize="11" Margin="0,0,0,4"
+                       Text="Прямые зоны размещаются выбранным семейством, уже загруженным в проект (без подгрузки из families)."/>
+            <ComboBox x:Name="CmbZoneFamily" Height="26" IsEditable="False"
+                      ToolTip="Семейства из текущего документа Revit"/>
+            <TextBlock x:Name="TxtZoneFamilyHint" TextWrapping="Wrap" FontSize="10" Foreground="#9CA3AF" Margin="0,4,0,0"
+                       Text="Список доступен при запуске из Revit."/>
+          </StackPanel>
+        </GroupBox>
+
         <GroupBox Header="Автораскладка зон">
           <StackPanel>
             <TextBlock x:Name="TxtLayoutGate" TextWrapping="Wrap" Foreground="#B45309" Margin="0,0,0,6"

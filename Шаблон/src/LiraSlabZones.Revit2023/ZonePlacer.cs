@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
 using LiraSlabZones.Core;
@@ -18,35 +17,27 @@ namespace LiraSlabZones.Revit2023
                 return 0;
 
             var level = FindNearestLevel(doc, analysis.Zones.First().LevelZM);
-            var root = SolutionPaths.FindRoot();
-            var familiesDir = Path.Combine(root, "families");
             int count = 0;
+            var straightKey = "__STRAIGHT__";
 
-            // Группируем по семейству
+            // Прямые зоны → выбранное в проекте семейство; остальные — по имени из проекта.
             foreach (var group in analysis.Zones.GroupBy(z =>
-                         string.IsNullOrWhiteSpace(z.FamilyFileName)
-                             ? (analysis.Settings.FamilyFileName ?? RebarTables.StraightFamily)
-                             : z.FamilyFileName))
+                         z.FamilyKind == ZoneFamilyKind.Straight
+                             ? straightKey
+                             : (string.IsNullOrWhiteSpace(z.FamilyFileName)
+                                 ? RebarTables.StraightFamily
+                                 : z.FamilyFileName)))
             {
-                var fileName = group.Key;
-                FamilySymbol? symbol = null;
-                try
+                FamilySymbol? symbol;
+                if (group.Key == straightKey)
                 {
-                    var path = FindFamilyPath(familiesDir, fileName)
-                               ?? PathResolver.FindFamilyOnODrive(fileName);
-                    if (path != null && File.Exists(path))
-                    {
-                        var name = Path.GetFileNameWithoutExtension(fileName);
-                        symbol = FamilyLoader.EnsureSymbol(doc, path, name);
-                    }
-                    else
-                    {
-                        symbol = defaultSymbol;
-                    }
+                    symbol = defaultSymbol
+                             ?? FamilyLoader.FindSymbol(doc, analysis.Settings.FamilyName);
                 }
-                catch
+                else
                 {
-                    symbol = defaultSymbol;
+                    var name = FamilyLoader.NormalizeFamilyName(group.Key);
+                    symbol = FamilyLoader.FindSymbol(doc, name) ?? defaultSymbol;
                 }
 
                 if (symbol == null) continue;
@@ -62,19 +53,6 @@ namespace LiraSlabZones.Revit2023
             return count;
         }
 
-        private static string? FindFamilyPath(string familiesDir, string fileName)
-        {
-            var direct = Path.Combine(familiesDir, fileName);
-            if (File.Exists(direct)) return direct;
-            // fallback: _R22 variant
-            var alt = Path.Combine(familiesDir, Path.GetFileNameWithoutExtension(fileName) + "_R22.rfa");
-            if (File.Exists(alt)) return alt;
-            var any = Directory.Exists(familiesDir)
-                ? Directory.GetFiles(familiesDir, Path.GetFileNameWithoutExtension(fileName) + "*.rfa").FirstOrDefault()
-                : null;
-            return any;
-        }
-
         private static bool PlaceOne(
             Document doc,
             FamilySymbol symbol,
@@ -84,7 +62,6 @@ namespace LiraSlabZones.Revit2023
         {
             var ox = settings.OffsetXM;
             var oy = settings.OffsetYM;
-            var rotDeg = settings.RotationDeg + zone.RotationDeg;
             var px = zone.Placement.X + ox;
             var py = zone.Placement.Y + oy;
             // apply global rotation about origin of transform (simple)

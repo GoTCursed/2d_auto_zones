@@ -263,6 +263,7 @@ namespace LiraSlabZones.Core
         public int DesignOption { get; set; } = 1;
 
         public string FamilyName { get; set; } = "SUM-30-Зона дополнительного армирования";
+        /// <summary>Имя файла для совместимости JSON; фактическое размещение — семейство из проекта Revit.</summary>
         public string FamilyFileName { get; set; } = "SUM-30-Зона дополнительного армирования.rfa";
 
         /// <summary>Минимальная ширина зоны, м (0 = без фильтра). В UI вводится в мм.</summary>

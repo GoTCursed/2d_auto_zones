@@ -60,6 +60,66 @@ namespace LiraSlabZones.Revit2023.UI
             BtnPlace.IsEnabled = callback != null;
         }
 
+        /// <summary>Имя семейства, выбранное в ComboBox (из проекта Revit).</summary>
+        public string? SelectedFamilyName =>
+            CmbZoneFamily.SelectedItem as string
+            ?? CmbZoneFamily.Text?.Trim();
+
+        /// <summary>Заполнить список семейств текущего документа Revit.</summary>
+        public void SetProjectFamilies(IReadOnlyList<string> familyNames, string? preferred = null)
+        {
+            _suppressUiEvents = true;
+            try
+            {
+                var prev = SelectedFamilyName;
+                CmbZoneFamily.Items.Clear();
+                if (familyNames == null || familyNames.Count == 0)
+                {
+                    TxtZoneFamilyHint.Text = "В проекте нет загруженных семейств.";
+                    return;
+                }
+
+                foreach (var n in familyNames)
+                    CmbZoneFamily.Items.Add(n);
+
+                var want = !string.IsNullOrWhiteSpace(preferred) ? preferred!.Trim()
+                    : !string.IsNullOrWhiteSpace(prev) ? prev!
+                    : _result?.Settings.FamilyName;
+
+                int idx = -1;
+                if (!string.IsNullOrWhiteSpace(want))
+                {
+                    for (int i = 0; i < CmbZoneFamily.Items.Count; i++)
+                    {
+                        var item = CmbZoneFamily.Items[i]?.ToString() ?? "";
+                        if (item.Equals(want, StringComparison.OrdinalIgnoreCase))
+                        {
+                            idx = i;
+                            break;
+                        }
+                    }
+                }
+
+                if (idx < 0)
+                {
+                    for (int i = 0; i < CmbZoneFamily.Items.Count; i++)
+                    {
+                        var item = CmbZoneFamily.Items[i]?.ToString() ?? "";
+                        if (item.IndexOf("SUM-30", StringComparison.OrdinalIgnoreCase) >= 0
+                            || item.IndexOf("дополнительного армирования", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            idx = i;
+                            break;
+                        }
+                    }
+                }
+
+                CmbZoneFamily.SelectedIndex = idx >= 0 ? idx : 0;
+                TxtZoneFamilyHint.Text = $"Семейств в проекте: {familyNames.Count}";
+            }
+            finally { _suppressUiEvents = false; }
+        }
+
         public void LoadResult(AnalysisResult result, bool fitView = true, bool syncUiSettings = true)
         {
             _result = result;
@@ -557,8 +617,8 @@ namespace LiraSlabZones.Revit2023.UI
                 TargetElevationZM = CmbLevels.SelectedItem is ElevationLevelInfo lv ? lv.ZM : double.NaN,
                 LoadReinforcement = true,
                 ModelPart = "Visible",
-                FamilyName = _result?.Settings.FamilyName ?? new AnalysisSettings().FamilyName,
-                FamilyFileName = _result?.Settings.FamilyFileName ?? new AnalysisSettings().FamilyFileName,
+                FamilyName = ResolveSelectedFamilyName(),
+                FamilyFileName = ResolveSelectedFamilyName() + ".rfa",
                 AutoLayout = auto,
                 PlacementMode = auto ? "AutoLayout" : "ElementCenter",
                 DetailLevel = detail,
@@ -619,7 +679,31 @@ namespace LiraSlabZones.Revit2023.UI
 
             ChkBarStep100.IsChecked = s.UseBarStep100 || s.BarStepMm == 100;
             SelectCombo(CmbConcrete, string.IsNullOrWhiteSpace(s.ConcreteClass) ? "—" : s.ConcreteClass);
+            SelectFamilyInCombo(s.FamilyName);
             UpdateLayoutGate(s);
+        }
+
+        private string ResolveSelectedFamilyName()
+        {
+            var fromUi = SelectedFamilyName;
+            if (!string.IsNullOrWhiteSpace(fromUi))
+                return fromUi!.Trim();
+            return _result?.Settings.FamilyName ?? new AnalysisSettings().FamilyName;
+        }
+
+        private void SelectFamilyInCombo(string? familyName)
+        {
+            if (CmbZoneFamily.Items.Count == 0 || string.IsNullOrWhiteSpace(familyName))
+                return;
+            for (int i = 0; i < CmbZoneFamily.Items.Count; i++)
+            {
+                var item = CmbZoneFamily.Items[i]?.ToString() ?? "";
+                if (item.Equals(familyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    CmbZoneFamily.SelectedIndex = i;
+                    return;
+                }
+            }
         }
 
         private void UpdateBackgroundAsLabels(AnalysisSettings? s = null)

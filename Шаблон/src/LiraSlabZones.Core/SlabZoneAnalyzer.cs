@@ -221,7 +221,7 @@ namespace LiraSlabZones.Core
                         WidthMm = widthMm,
                         LengthMm = UnitConversion.MetersToMm(Math.Max(plate.WidthM, plate.LengthM)),
                         FamilyKind = ZoneFamilyKind.Straight,
-                        FamilyFileName = RebarTables.StraightFamily,
+                        FamilyFileName = settings.GetFamilyName(ZoneFamilyKind.Straight),
                         AsCoveredCm2PerM = d > 0 ? BarCapacity.AsCm2PerM(d, step) : 0,
                         ConcreteClass = settings.ConcreteClass,
                         AlphaCoef = settings.AlphaCoef,

@@ -14,16 +14,19 @@ namespace LiraSlabZones.Core
             1460, 1950, 2340, 2900, 3900, 4680, 5850, 7800, 8800, 11700
         };
 
-        public const string StraightFamily = "SUM-30-Зона дополнительного армирования.rfa";
-        public const string LFamily = "SUM-31-Зона дополнительного армирования Г.rfa";
-        public const string PEqualFamily = "SUM-32-Зона дополнительного армирования П-образная равнополочная.rfa";
-        public const string PDiffFamily = "SUM-33-Зона дополнительного армирования П-образная разнополочная.rfa";
-        public const string BentStickFamily = "SUM-34-Зона дополнительного армирования Гнутый стержень.rfa";
+        public const string StraightFamily = "SUM-30-Зона дополнительного армирования";
+        public const string LFamily = "SUM-31-Зона дополнительного армирования Г";
+        public const string PEqualFamily = "SUM-32-Зона дополнительного армирования П-образная равнополочная";
+        public const string PDiffFamily = "SUM-33-Зона дополнительного армирования П-образная разнополочная";
+        public const string BentStickFamily = "SUM-34-Зона дополнительного армирования Гнутый стержень";
 
-        public static readonly string[] AllFamilyFiles =
+        public static readonly string[] AllFamilyNames =
         {
             StraightFamily, LFamily, PEqualFamily, PDiffFamily, BentStickFamily
         };
+
+        [Obsolete("Используйте AllFamilyNames — семейства не подгружаются из .rfa.")]
+        public static readonly string[] AllFamilyFiles = AllFamilyNames;
 
         // Анкеровка A500, мм (уже округлено вверх до 10 в ТЗ)
         private static readonly Dictionary<string, Dictionary<int, int>> Anchorage = new()
@@ -114,7 +117,9 @@ namespace LiraSlabZones.Core
             return best;
         }
 
-        public static string FamilyFileName(ZoneFamilyKind kind) => kind switch
+        public static string FamilyFileName(ZoneFamilyKind kind) => FamilyName(kind);
+
+        public static string FamilyName(ZoneFamilyKind kind) => kind switch
         {
             ZoneFamilyKind.L => LFamily,
             ZoneFamilyKind.PEqual => PEqualFamily,

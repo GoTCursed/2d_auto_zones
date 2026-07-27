@@ -126,7 +126,8 @@ namespace LiraSlabZones.Core
         public double WidthMm { get; set; }
         public double LengthMm { get; set; }
         public ZoneFamilyKind FamilyKind { get; set; } = ZoneFamilyKind.Straight;
-        public string FamilyFileName { get; set; } = RebarTables.StraightFamily;
+        /// <summary>Имя семейства в проекте Revit (без .rfa).</summary>
+        public string FamilyFileName { get; set; } = "SUM-30-Зона дополнительного армирования";
         public double AsCoveredCm2PerM { get; set; }
         public string ConcreteClass { get; set; } = "B25";
         public double AlphaCoef { get; set; } = 1.0;
@@ -262,8 +263,49 @@ namespace LiraSlabZones.Core
         public string PlacementMode { get; set; } = "AutoLayout";
         public int DesignOption { get; set; } = 1;
 
-        public string FamilyName { get; set; } = "SUM-30-Зона дополнительного армирования";
-        public string FamilyFileName { get; set; } = "SUM-30-Зона дополнительного армирования.rfa";
+        /// <summary>Прямая зона (SUM-30) — имя семейства в проекте Revit.</summary>
+        public string FamilyStraight { get; set; } = "SUM-30-Зона дополнительного армирования";
+        public string FamilyL { get; set; } = "SUM-31-Зона дополнительного армирования Г";
+        public string FamilyPEqual { get; set; } = "SUM-32-Зона дополнительного армирования П-образная равнополочная";
+        public string FamilyPDiff { get; set; } = "SUM-33-Зона дополнительного армирования П-образная разнополочная";
+        public string FamilyBentStick { get; set; } = "SUM-34-Зона дополнительного армирования Гнутый стержень";
+
+        /// <summary>Синоним FamilyStraight (совместимость JSON).</summary>
+        public string FamilyName
+        {
+            get => string.IsNullOrWhiteSpace(FamilyStraight) ? "SUM-30-Зона дополнительного армирования" : FamilyStraight;
+            set => FamilyStraight = AppConfig.StripRfa(value ?? "");
+        }
+
+        /// <summary>Совместимость: имя + «.rfa», фактически в Revit ищется FamilyStraight.</summary>
+        public string FamilyFileName
+        {
+            get => FamilyName + ".rfa";
+            set
+            {
+                var n = AppConfig.StripRfa(value ?? "");
+                if (!string.IsNullOrWhiteSpace(n))
+                    FamilyStraight = n;
+            }
+        }
+
+        public string GetFamilyName(ZoneFamilyKind kind) => kind switch
+        {
+            ZoneFamilyKind.L => string.IsNullOrWhiteSpace(FamilyL) ? BuiltIn(kind) : FamilyL.Trim(),
+            ZoneFamilyKind.PEqual => string.IsNullOrWhiteSpace(FamilyPEqual) ? BuiltIn(kind) : FamilyPEqual.Trim(),
+            ZoneFamilyKind.PDiff => string.IsNullOrWhiteSpace(FamilyPDiff) ? BuiltIn(kind) : FamilyPDiff.Trim(),
+            ZoneFamilyKind.BentStick => string.IsNullOrWhiteSpace(FamilyBentStick) ? BuiltIn(kind) : FamilyBentStick.Trim(),
+            _ => FamilyName
+        };
+
+        private static string BuiltIn(ZoneFamilyKind kind) => kind switch
+        {
+            ZoneFamilyKind.L => "SUM-31-Зона дополнительного армирования Г",
+            ZoneFamilyKind.PEqual => "SUM-32-Зона дополнительного армирования П-образная равнополочная",
+            ZoneFamilyKind.PDiff => "SUM-33-Зона дополнительного армирования П-образная разнополочная",
+            ZoneFamilyKind.BentStick => "SUM-34-Зона дополнительного армирования Гнутый стержень",
+            _ => "SUM-30-Зона дополнительного армирования"
+        };
 
         /// <summary>Минимальная ширина зоны, м (0 = без фильтра). В UI вводится в мм.</summary>
         public double MinZoneWidthM { get; set; } = 0;

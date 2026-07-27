@@ -60,6 +60,65 @@ namespace LiraSlabZones.Revit2023.UI
             BtnPlace.IsEnabled = callback != null;
         }
 
+        /// <summary>Имя прямой зоны из ComboBox (из проекта или вручную).</summary>
+        public string? SelectedFamilyName
+        {
+            get
+            {
+                if (CmbZoneFamily.SelectedItem is string s && !string.IsNullOrWhiteSpace(s))
+                    return s.Trim();
+                var text = CmbZoneFamily.Text?.Trim();
+                return string.IsNullOrWhiteSpace(text) ? null : text;
+            }
+        }
+
+        /// <summary>Заполнить список семейств текущего документа Revit.</summary>
+        public void SetProjectFamilies(IReadOnlyList<string> familyNames, string? preferred = null)
+        {
+            _suppressUiEvents = true;
+            try
+            {
+                var prev = SelectedFamilyName;
+                CmbZoneFamily.Items.Clear();
+                if (familyNames == null || familyNames.Count == 0)
+                {
+                    TxtZoneFamilyHint.Text = "В проекте нет загруженных семейств. Имена можно ввести вручную.";
+                }
+                else
+                {
+                    foreach (var n in familyNames)
+                        CmbZoneFamily.Items.Add(n);
+                    TxtZoneFamilyHint.Text = $"Семейств в проекте: {familyNames.Count}. User cfg: {AppConfig.UserConfigPath}";
+                }
+
+                var want = !string.IsNullOrWhiteSpace(preferred) ? preferred!.Trim()
+                    : !string.IsNullOrWhiteSpace(prev) ? prev!
+                    : _result?.Settings.FamilyStraight;
+
+                SelectFamilyInCombo(want);
+                if (CmbZoneFamily.SelectedIndex < 0 && !string.IsNullOrWhiteSpace(want))
+                    CmbZoneFamily.Text = want;
+            }
+            finally { _suppressUiEvents = false; }
+        }
+
+        private void BtnSaveUserCfg_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var s = ReadSettingsFromUi();
+                AppConfig.SaveUserSettings(s);
+                if (_result != null) _result.Settings = s;
+                Log($"Сохранено: {AppConfig.UserConfigPath}", "ok");
+                TxtZoneFamilyHint.Text = $"Сохранено → {AppConfig.UserConfigPath}";
+            }
+            catch (Exception ex)
+            {
+                Log(ex.Message, "error");
+                MessageBox.Show(ex.Message, "LiraSlabZones", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
         public void LoadResult(AnalysisResult result, bool fitView = true, bool syncUiSettings = true)
         {
             _result = result;
@@ -536,6 +595,9 @@ namespace LiraSlabZones.Revit2023.UI
             int.TryParse(bgTopD, out var topD);
             int.TryParse(bgTopStep, out var topStep);
 
+            var baseCfg = _result?.Settings ?? AppConfig.LoadEffectiveSettings();
+            var straight = ResolveSelectedFamilyName();
+
             var settings = new AnalysisSettings
             {
                 ShowAs1 = ChkAs1.IsChecked == true,
@@ -557,8 +619,11 @@ namespace LiraSlabZones.Revit2023.UI
                 TargetElevationZM = CmbLevels.SelectedItem is ElevationLevelInfo lv ? lv.ZM : double.NaN,
                 LoadReinforcement = true,
                 ModelPart = "Visible",
-                FamilyName = _result?.Settings.FamilyName ?? new AnalysisSettings().FamilyName,
-                FamilyFileName = _result?.Settings.FamilyFileName ?? new AnalysisSettings().FamilyFileName,
+                FamilyStraight = straight,
+                FamilyL = string.IsNullOrWhiteSpace(TbFamilyL.Text) ? baseCfg.FamilyL : TbFamilyL.Text.Trim(),
+                FamilyPEqual = string.IsNullOrWhiteSpace(TbFamilyPEqual.Text) ? baseCfg.FamilyPEqual : TbFamilyPEqual.Text.Trim(),
+                FamilyPDiff = string.IsNullOrWhiteSpace(TbFamilyPDiff.Text) ? baseCfg.FamilyPDiff : TbFamilyPDiff.Text.Trim(),
+                FamilyBentStick = string.IsNullOrWhiteSpace(TbFamilyBent.Text) ? baseCfg.FamilyBentStick : TbFamilyBent.Text.Trim(),
                 AutoLayout = auto,
                 PlacementMode = auto ? "AutoLayout" : "ElementCenter",
                 DetailLevel = detail,
@@ -619,7 +684,38 @@ namespace LiraSlabZones.Revit2023.UI
 
             ChkBarStep100.IsChecked = s.UseBarStep100 || s.BarStepMm == 100;
             SelectCombo(CmbConcrete, string.IsNullOrWhiteSpace(s.ConcreteClass) ? "—" : s.ConcreteClass);
+            SelectFamilyInCombo(s.FamilyStraight);
+            if (CmbZoneFamily.SelectedIndex < 0)
+                CmbZoneFamily.Text = s.FamilyStraight ?? "";
+            TbFamilyL.Text = s.FamilyL ?? "";
+            TbFamilyPEqual.Text = s.FamilyPEqual ?? "";
+            TbFamilyPDiff.Text = s.FamilyPDiff ?? "";
+            TbFamilyBent.Text = s.FamilyBentStick ?? "";
             UpdateLayoutGate(s);
+        }
+
+        private string ResolveSelectedFamilyName()
+        {
+            var fromUi = SelectedFamilyName;
+            if (!string.IsNullOrWhiteSpace(fromUi))
+                return AppConfig.StripRfa(fromUi!);
+            return _result?.Settings.FamilyStraight
+                   ?? AppConfig.LoadEffectiveSettings().FamilyStraight;
+        }
+
+        private void SelectFamilyInCombo(string? familyName)
+        {
+            if (string.IsNullOrWhiteSpace(familyName))
+                return;
+            for (int i = 0; i < CmbZoneFamily.Items.Count; i++)
+            {
+                var item = CmbZoneFamily.Items[i]?.ToString() ?? "";
+                if (item.Equals(familyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    CmbZoneFamily.SelectedIndex = i;
+                    return;
+                }
+            }
         }
 
         private void UpdateBackgroundAsLabels(AnalysisSettings? s = null)

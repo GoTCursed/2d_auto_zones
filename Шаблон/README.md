@@ -7,7 +7,10 @@
 
 **ЛИРА-САПР 2024 → зоны доп. армирования плит → превью → Revit 2023**
 
-Семейство: `SUM-30-Зона дополнительного армирования_R22`  
+Семейства зон **не подгружаются** из `.rfa`. Имена конфигурируемы:
+- дефолты: `DefaultSettings.cfg` (репозиторий)
+- пользователь: `%APPDATA%\Roaming\Autodesk\Revit\Addins\2023\LiraSlabZones.cfg`
+
 Зона создаётся, где подобранный **As1…As4** превышает **фон** (см²/м).
 
 UX-ориентиры: [SmartRebar](https://promcore.io/blog/smartrebar/#wbb1), [Smart КР](https://rutube.ru/video/f4198009b09324c7316e697a16613820/).
@@ -42,10 +45,13 @@ powershell -ExecutionPolicy Bypass -File .\install-addin.ps1
   README.md                 ← этот файл
   LiraSlabZones.sln
   install-addin.ps1 / .bat
-  config/settings.json      ← дефолты анализа
-  families/*.rfa
+  DefaultSettings.cfg       ← дефолтные имена семейств и настройки
+  config/                   ← опционально (legacy)
+  families/                 ← .rfa не хранятся; только README
   interop/                  ← LiraSapr / LiraResAPI / Sapfir Interop
   output/                   ← примеры JSON
+  installer/                ← Inno Setup → LiraSlabZones-Setup.exe
+  dist/                     ← собранный Setup.exe
   src/
     LiraSlabZones.Core/           бизнес-логика (без WPF/Revit)
     LiraSlabZones.PreviewHost/    standalone WPF (линкует UI из Revit2023)

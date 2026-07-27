@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
 using LiraSlabZones.Core;
@@ -9,7 +8,6 @@ namespace LiraSlabZones.Revit2023
 {
     internal static class ZonePlacer
     {
-        // Футы — ТОЛЬКО здесь (граница Revit API).
         private const double MetersToFeet = UnitConversion.MetersToFeet;
 
         public static int Place(Document doc, FamilySymbol? defaultSymbol, AnalysisResult analysis)
@@ -17,62 +15,40 @@ namespace LiraSlabZones.Revit2023
             if (analysis.Zones == null || analysis.Zones.Count == 0)
                 return 0;
 
+            var settings = analysis.Settings ?? AppConfig.LoadEffectiveSettings();
             var level = FindNearestLevel(doc, analysis.Zones.First().LevelZM);
-            var root = SolutionPaths.FindRoot();
-            var familiesDir = Path.Combine(root, "families");
             int count = 0;
+            var cache = new Dictionary<string, FamilySymbol?>(StringComparer.OrdinalIgnoreCase);
 
-            // Группируем по семейству
-            foreach (var group in analysis.Zones.GroupBy(z =>
-                         string.IsNullOrWhiteSpace(z.FamilyFileName)
-                             ? (analysis.Settings.FamilyFileName ?? RebarTables.StraightFamily)
-                             : z.FamilyFileName))
+            foreach (var group in analysis.Zones.GroupBy(z => settings.GetFamilyName(z.FamilyKind)))
             {
-                var fileName = group.Key;
-                FamilySymbol? symbol = null;
-                try
+                var familyName = group.Key;
+                if (!cache.TryGetValue(familyName, out var symbol))
                 {
-                    var path = FindFamilyPath(familiesDir, fileName)
-                               ?? PathResolver.FindFamilyOnODrive(fileName);
-                    if (path != null && File.Exists(path))
-                    {
-                        var name = Path.GetFileNameWithoutExtension(fileName);
-                        symbol = FamilyLoader.EnsureSymbol(doc, path, name);
-                    }
-                    else
-                    {
+                    symbol = FamilyLoader.FindSymbol(doc, familyName);
+                    if (symbol == null
+                        && defaultSymbol != null
+                        && familyName.Equals(settings.GetFamilyName(ZoneFamilyKind.Straight), StringComparison.OrdinalIgnoreCase))
                         symbol = defaultSymbol;
-                    }
-                }
-                catch
-                {
-                    symbol = defaultSymbol;
+                    cache[familyName] = symbol;
                 }
 
-                if (symbol == null) continue;
+                if (symbol == null)
+                    throw new InvalidOperationException(
+                        "Семейство «" + familyName + "» не найдено в проекте Revit.\n" +
+                        "Плагин не подгружает .rfa — загрузите семейство в проект вручную.\n" +
+                        "Имя настраивается в " + AppConfig.UserConfigPath);
+
                 if (!symbol.IsActive) symbol.Activate();
 
                 foreach (var zone in group)
                 {
-                    if (PlaceOne(doc, symbol, level, zone, analysis.Settings))
+                    if (PlaceOne(doc, symbol, level, zone, settings))
                         count++;
                 }
             }
 
             return count;
-        }
-
-        private static string? FindFamilyPath(string familiesDir, string fileName)
-        {
-            var direct = Path.Combine(familiesDir, fileName);
-            if (File.Exists(direct)) return direct;
-            // fallback: _R22 variant
-            var alt = Path.Combine(familiesDir, Path.GetFileNameWithoutExtension(fileName) + "_R22.rfa");
-            if (File.Exists(alt)) return alt;
-            var any = Directory.Exists(familiesDir)
-                ? Directory.GetFiles(familiesDir, Path.GetFileNameWithoutExtension(fileName) + "*.rfa").FirstOrDefault()
-                : null;
-            return any;
         }
 
         private static bool PlaceOne(
@@ -84,10 +60,8 @@ namespace LiraSlabZones.Revit2023
         {
             var ox = settings.OffsetXM;
             var oy = settings.OffsetYM;
-            var rotDeg = settings.RotationDeg + zone.RotationDeg;
             var px = zone.Placement.X + ox;
             var py = zone.Placement.Y + oy;
-            // apply global rotation about origin of transform (simple)
             if (Math.Abs(settings.RotationDeg) > 1e-9)
             {
                 var rad = settings.RotationDeg * Math.PI / 180.0;
@@ -119,7 +93,6 @@ namespace LiraSlabZones.Revit2023
 
             if (inst == null) return false;
 
-            // Поворот вокруг Z: Direction Y → 90° (+ UI)
             var zoneRot = zone.Direction == ZoneDirection.Y ? 90.0 : 0.0;
             var totalRot = (settings.RotationDeg + zoneRot) * Math.PI / 180.0;
             if (Math.Abs(totalRot) > 1e-9)

@@ -29,7 +29,7 @@ namespace LiraSlabZones.Core
                 return new List<AdditionalZone>();
 
             settings.DetailLevel = DetailOptimizer.FromSlider(settings.DetailSlider);
-            settings.BarStepMm = settings.UseBarStep100 ? 100 : 200;
+            settings.BarStepMm = 200;
 
             var zones = new List<AdditionalZone>();
             var zoneId = 1;
@@ -66,53 +66,64 @@ namespace LiraSlabZones.Core
             ref int zoneId)
         {
             var direction = RebarTables.DirectionForLayer(layer);
-            var values = MosaicBuilder.SmoothSingleSpike(mosaic.Values);
+            var detailStep = DetailOptimizer.StepIndexFromSlider(settings.DetailSlider);
+            var values = detailStep == DetailOptimizer.StepCount - 1
+                ? mosaic.Values
+                : MosaicBuilder.SmoothSingleSpike(mosaic.Values);
             var ny = mosaic.Ny;
             var nx = mosaic.Nx;
             var cellMm = mosaic.CellMm;
             var thresholdRatio = DetailOptimizer.ThresholdRatioForSlider(settings.DetailSlider);
             var concrete = RebarTables.NormalizeConcrete(settings.ConcreteClass);
-            var step = settings.UseBarStep100 ? 100 : 200;
-            settings.BarStepMm = step;
             var maxD = settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36;
             var minFamilyLen = RebarTables.Sum3FamilyLengthsMm[0];
-            var gapPerpM = UnitConversion.MmToMeters(step); // зазор между зонами = шаг стержней
-
             // Лимиты из UI (мм). 0 = без ограничения. Поддержка «старых» значений ≥50, сохранённых как «м».
             var minWidthMm = SettingToMm(settings.MinZoneWidthM);
             var maxWidthMm = SettingToMm(settings.MaxZoneWidthM);
             var minLengthMm = SettingToMm(settings.MinZoneLengthM);
             if (minLengthMm > minFamilyLen) minFamilyLen = (int)Math.Round(minLengthMm);
             var minFe = settings.MinActiveElements;
-            var maxima = LocalMaxima(values);
             var peaks = new List<(double V, int Ix, int Iy)>();
             for (var iy = 0; iy < ny; iy++)
             for (var ix = 0; ix < nx; ix++)
-                if (maxima[iy][ix] && values[iy][ix] > 0.01)
+                if (values[iy][ix] > 0.01)
                     peaks.Add((values[iy][ix], ix, iy));
+            // Все положительные ячейки являются кандидатами. После обработки высоких
+            // диапазонов оставшиеся низкие значения также должны получить покрытие.
             peaks.Sort((a, b) => b.V.CompareTo(a.V));
 
             var assigned = new bool[ny, nx];
             var result = new List<AdditionalZone>();
             // Уже размещённые AABB (м) для контроля зазора/перекрытий
-            var placed = new List<(double MinX, double MaxX, double MinY, double MaxY)>();
+            var placed = new List<(double MinX, double MaxX, double MinY, double MaxY, int StepMm)>();
 
             foreach (var (vPeak, ix0, iy0) in peaks)
             {
                 if (assigned[iy0, ix0]) continue;
 
-                var dZone = BarCapacity.MinDiameterForAs(vPeak, step, maxD);
+                var backgroundDiameter = GetBackgroundDiameter(settings, layer);
+                var barOption = BarCapacity.SelectDiameterAndStep(
+                    vPeak, maxD, backgroundDiameter, settings.UseBarStep100);
+                var dZone = barOption.DiameterMm;
+                var step = barOption.StepMm;
                 if (dZone <= 0) continue;
 
-                var aThr = thresholdRatio * vPeak;
-                GrowSolidRect(values, ix0, iy0, aThr, out var iLeft, out var iRight, out var jDown, out var jUp);
+                // В режиме Min весь положительный связный диапазон образует одно пятно.
+                // На остальных ступенях сохраняется градация относительно локального пика.
+                var aThr = detailStep == DetailOptimizer.StepCount - 1
+                    ? 0.01
+                    : thresholdRatio * vPeak;
+                var activeRegion = GrowConnectedRegion(
+                    values, assigned, ix0, iy0, aThr,
+                    out var iLeft, out var iRight, out var jDown, out var jUp);
 
-                // Мин. число активных КЭ (ячеек мозаики с As ≥ порога)
-                var activeCells = 0;
-                for (var iy = jDown; iy <= jUp; iy++)
-                for (var ix = iLeft; ix <= iRight; ix++)
-                    if (values[iy][ix] >= aThr) activeCells++;
-                if (minFe > 0 && activeCells < minFe) continue;
+                // Считаем уникальные окрашенные КЭ, а не ячейки регулярной мозаики:
+                // один крупный/треугольный КЭ может занимать несколько ячеек.
+                var activeElementCount = activeRegion
+                    .SelectMany(c => mosaic.PlateIds[c.Iy][c.Ix])
+                    .Distinct()
+                    .Count();
+                if (minFe > 0 && activeElementCount < minFe) continue;
 
                 var x0 = mosaic.OriginXM + iLeft * (cellMm / 1000.0);
                 var x1 = mosaic.OriginXM + (iRight + 1) * (cellMm / 1000.0);
@@ -170,10 +181,8 @@ namespace LiraSlabZones.Core
                 var segments = SplitByMaxLength(longStartMm, longEndMm, dZone, concrete, settings.AlphaCoef);
 
                 var elementIds = new List<int>();
-                for (var iy = jDown; iy <= jUp; iy++)
-                for (var ix = iLeft; ix <= iRight; ix++)
-                    if (values[iy][ix] >= aThr)
-                        elementIds.AddRange(mosaic.PlateIds[iy][ix]);
+                foreach (var cell in activeRegion)
+                    elementIds.AddRange(mosaic.PlateIds[cell.Iy][cell.Ix]);
 
                 var coreCx = (x0 + x1) / 2.0;
                 var coreCy = (y0 + y1) / 2.0;
@@ -208,6 +217,10 @@ namespace LiraSlabZones.Core
                         maxXM = perpMid + halfW;
                     }
 
+                    FitRectInsideSlabBounds(
+                        ref minXM, ref maxXM, ref minYM, ref maxYM,
+                        outline, settings.SlabEdgeInsetMm);
+
                     // 1) Подрезка контуром плиты (пересечение, не «сдвиг наружу»)
                     if (!MeshBoundary.ClipRectToSlab(ref minXM, ref maxXM, ref minYM, ref maxYM, outline, settings.SlabEdgeInsetMm))
                         continue;
@@ -231,6 +244,9 @@ namespace LiraSlabZones.Core
 
                     // 2) Привязка к осям (ограниченный сдвиг) + повторный клип
                     var tie = AxisSnapper.SnapRect(ref minXM, ref maxXM, ref minYM, ref maxYM, axes);
+                    FitRectInsideSlabBounds(
+                        ref minXM, ref maxXM, ref minYM, ref maxYM,
+                        outline, settings.SlabEdgeInsetMm);
                     if (!MeshBoundary.ClipRectToSlab(ref minXM, ref maxXM, ref minYM, ref maxYM, outline, settings.SlabEdgeInsetMm))
                         continue;
                     // пересчёт длины/ширины после snap+clip
@@ -249,11 +265,13 @@ namespace LiraSlabZones.Core
                     CenterPerpWidth(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, widthMmFinal);
 
                     // 3) Зазор без увода с пятна
-                    if (!ResolvePerpGap(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, gapPerpM, placed))
-                        continue;
+                    var beforeGap = (minXM, maxXM, minYM, maxYM);
+                    // Сначала пытаемся выдержать зазор. Если места нет, функция вернёт
+                    // исходное положение: покрытие расчётного пятна важнее непересечения зон.
+                    ResolvePerpGap(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, step, placed);
                     if (!CoversPoint(minXM, maxXM, minYM, maxYM, peakXM, peakYM) &&
                         !OverlapsCore(minXM, maxXM, minYM, maxYM, x0, x1, y0, y1))
-                        continue;
+                        (minXM, maxXM, minYM, maxYM) = beforeGap;
                     if (!MeshBoundary.ClipRectToSlab(ref minXM, ref maxXM, ref minYM, ref maxYM, outline, settings.SlabEdgeInsetMm))
                         continue;
                     if (!CoversPoint(minXM, maxXM, minYM, maxYM, peakXM, peakYM) &&
@@ -288,17 +306,32 @@ namespace LiraSlabZones.Core
                     CenterPerpWidth(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, widthMmFinal);
                     if (!MeshBoundary.ClipRectToSlab(ref minXM, ref maxXM, ref minYM, ref maxYM, outline, settings.SlabEdgeInsetMm))
                         continue;
-                    if (!ResolvePerpGap(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, gapPerpM, placed))
-                        continue;
+                    beforeGap = (minXM, maxXM, minYM, maxYM);
+                    ResolvePerpGap(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, step, placed);
                     if (!CoversPoint(minXM, maxXM, minYM, maxYM, peakXM, peakYM) &&
                         !OverlapsCore(minXM, maxXM, minYM, maxYM, x0, x1, y0, y1))
+                        (minXM, maxXM, minYM, maxYM) = beforeGap;
+
+                    ShiftRectToCoverCore(
+                        ref minXM, ref maxXM, ref minYM, ref maxYM,
+                        x0, x1, y0, y1);
+
+                    // ShiftRectToCoverCore может вернуть зону вплотную к соседней.
+                    // Финальный проход восстанавливает требуемый парный зазор; близость
+                    // сама по себе не является причиной укрупнять зоны.
+                    ResolvePerpGap(
+                        ref minXM, ref maxXM, ref minYM, ref maxYM,
+                        direction, step, placed);
+                    if (!MeshBoundary.ClipRectToSlab(
+                        ref minXM, ref maxXM, ref minYM, ref maxYM,
+                        outline, settings.SlabEdgeInsetMm))
                         continue;
 
                     cx = (minXM + maxXM) / 2.0;
                     cy = (minYM + maxYM) / 2.0;
                     tie = ComputeTie(minXM, minYM, axes);
 
-                    placed.Add((minXM, maxXM, minYM, maxYM));
+                    placed.Add((minXM, maxXM, minYM, maxYM, step));
                     placedAnyForPeak = true;
 
                     result.Add(new AdditionalZone
@@ -351,14 +384,12 @@ namespace LiraSlabZones.Core
                 // Помечаем ячейки только после успешной укладки — иначе пятно «съедается» без зоны
                 if (placedAnyForPeak)
                 {
-                    for (var iy = jDown; iy <= jUp; iy++)
-                    for (var ix = iLeft; ix <= iRight; ix++)
-                        if (values[iy][ix] >= aThr)
-                            assigned[iy, ix] = true;
+                    foreach (var cell in activeRegion)
+                        assigned[cell.Iy, cell.Ix] = true;
                 }
             }
 
-            return result;
+            return MergeOverlappingZones(result, mosaic, layer, settings, outline);
         }
 
         /// <summary>
@@ -412,6 +443,28 @@ namespace LiraSlabZones.Core
 
         private static bool CoversPoint(double minX, double maxX, double minY, double maxY, double px, double py)
             => px >= minX - 1e-6 && px <= maxX + 1e-6 && py >= minY - 1e-6 && py <= maxY + 1e-6;
+
+        private static void ShiftRectToCoverCore(
+            ref double minX, ref double maxX, ref double minY, ref double maxY,
+            double coreMinX, double coreMaxX, double coreMinY, double coreMaxY)
+        {
+            if (maxX - minX + 1e-6 >= coreMaxX - coreMinX)
+            {
+                var dx = minX > coreMinX ? coreMinX - minX
+                    : maxX < coreMaxX ? coreMaxX - maxX
+                    : 0;
+                minX += dx;
+                maxX += dx;
+            }
+            if (maxY - minY + 1e-6 >= coreMaxY - coreMinY)
+            {
+                var dy = minY > coreMinY ? coreMinY - minY
+                    : maxY < coreMaxY ? coreMaxY - maxY
+                    : 0;
+                minY += dy;
+                maxY += dy;
+            }
+        }
 
         private static bool OverlapsCore(
             double minX, double maxX, double minY, double maxY,
@@ -475,49 +528,812 @@ namespace LiraSlabZones.Core
             return info;
         }
 
-        /// <summary>Рост прямоугольника: расширяем ребро, только если ВСЯ колонка/строка ≥ порога.</summary>
-        private static void GrowSolidRect(
-            double[][] area, int ix0, int iy0, double aThr,
+        /// <summary>
+        /// Собирает всё связное пятно значений ≥ порога и возвращает его габаритный прямоугольник.
+        /// Так ступенчатые и Г-образные диапазоны не распадаются на зоны по одной ячейке.
+        /// </summary>
+        private static List<(int Ix, int Iy)> GrowConnectedRegion(
+            double[][] area, bool[,] assigned, int ix0, int iy0, double aThr,
             out int iLeft, out int iRight, out int jDown, out int jUp)
         {
             var ny = area.Length;
             var nx = area[0].Length;
             iLeft = iRight = ix0;
             jDown = jUp = iy0;
+            var result = new List<(int Ix, int Iy)>();
+            var visited = new bool[ny, nx];
+            var queue = new Queue<(int Ix, int Iy)>();
+            queue.Enqueue((ix0, iy0));
+            visited[iy0, ix0] = true;
 
-            bool expanded;
-            do
+            while (queue.Count > 0)
             {
-                expanded = false;
-                if (iLeft > 0)
+                var cell = queue.Dequeue();
+                if (assigned[cell.Iy, cell.Ix] || area[cell.Iy][cell.Ix] < aThr) continue;
+                result.Add(cell);
+                iLeft = Math.Min(iLeft, cell.Ix);
+                iRight = Math.Max(iRight, cell.Ix);
+                jDown = Math.Min(jDown, cell.Iy);
+                jUp = Math.Max(jUp, cell.Iy);
+
+                var neighbours = new[]
                 {
-                    var ok = true;
-                    for (var iy = jDown; iy <= jUp; iy++)
-                        if (area[iy][iLeft - 1] < aThr) { ok = false; break; }
-                    if (ok) { iLeft--; expanded = true; }
-                }
-                if (iRight + 1 < nx)
+                    (cell.Ix - 1, cell.Iy), (cell.Ix + 1, cell.Iy),
+                    (cell.Ix, cell.Iy - 1), (cell.Ix, cell.Iy + 1)
+                };
+                foreach (var next in neighbours)
                 {
-                    var ok = true;
-                    for (var iy = jDown; iy <= jUp; iy++)
-                        if (area[iy][iRight + 1] < aThr) { ok = false; break; }
-                    if (ok) { iRight++; expanded = true; }
+                    if (next.Item1 < 0 || next.Item1 >= nx || next.Item2 < 0 || next.Item2 >= ny) continue;
+                    if (visited[next.Item2, next.Item1]) continue;
+                    visited[next.Item2, next.Item1] = true;
+                    if (!assigned[next.Item2, next.Item1] && area[next.Item2][next.Item1] >= aThr)
+                        queue.Enqueue((next.Item1, next.Item2));
                 }
-                if (jDown > 0)
+            }
+            return result;
+        }
+
+        private static int GetBackgroundDiameter(AnalysisSettings settings, RebarLayer layer) =>
+            layer is RebarLayer.As1 or RebarLayer.As2
+                ? settings.BgBottomDiameterMm
+                : settings.BgTopDiameterMm;
+
+        private static bool RectanglesOverlapArea(
+            double minX1, double maxX1, double minY1, double maxY1,
+            double minX2, double maxX2, double minY2, double maxY2) =>
+            Math.Min(maxX1, maxX2) - Math.Max(minX1, minX2) > 1e-6 &&
+            Math.Min(maxY1, maxY2) - Math.Max(minY1, minY2) > 1e-6;
+
+        private static List<AdditionalZone> MergeOverlappingZones(
+            List<AdditionalZone> zones, MosaicGrid mosaic, RebarLayer layer, AnalysisSettings settings,
+            IList<Point3>? outline)
+        {
+            var merged = new List<AdditionalZone>(zones);
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (var i = 0; i < merged.Count && !changed; i++)
+                for (var j = i + 1; j < merged.Count; j++)
                 {
-                    var ok = true;
-                    for (var ix = iLeft; ix <= iRight; ix++)
-                        if (area[jDown - 1][ix] < aThr) { ok = false; break; }
-                    if (ok) { jDown--; expanded = true; }
+                    var a = merged[i];
+                    var b = merged[j];
+                    if (a.Layer != b.Layer || a.Contour.Count < 3 || b.Contour.Count < 3)
+                        continue;
+
+                    var aMinX = a.Contour.Min(p => p.X);
+                    var aMaxX = a.Contour.Max(p => p.X);
+                    var aMinY = a.Contour.Min(p => p.Y);
+                    var aMaxY = a.Contour.Max(p => p.Y);
+                    var bMinX = b.Contour.Min(p => p.X);
+                    var bMaxX = b.Contour.Max(p => p.X);
+                    var bMinY = b.Contour.Min(p => p.Y);
+                    var bMaxY = b.Contour.Max(p => p.Y);
+                    if (!RectanglesOverlapArea(aMinX, aMaxX, aMinY, aMaxY, bMinX, bMaxX, bMinY, bMaxY))
+                        continue;
+
+                    var minX = Math.Min(aMinX, bMinX);
+                    var maxX = Math.Max(aMaxX, bMaxX);
+                    var minY = Math.Min(aMinY, bMinY);
+                    var maxY = Math.Max(aMaxY, bMaxY);
+                    var governing = a.AsAdditional >= b.AsAdditional ? a : b;
+                    a.AsRequired = Math.Max(a.AsRequired, b.AsRequired);
+                    a.AsAdditional = Math.Max(a.AsAdditional, b.AsAdditional);
+                    a.DiameterMm = governing.DiameterMm;
+                    a.BarStepMm = governing.BarStepMm;
+                    a.AsCoveredCm2PerM = governing.AsCoveredCm2PerM;
+                    a.NodeIds = a.NodeIds.Concat(b.NodeIds).Distinct().ToList();
+                    a.ElementId = a.NodeIds.FirstOrDefault();
+                    a.Contour = new List<Point3>
+                    {
+                        new Point3(minX, minY, a.LevelZM),
+                        new Point3(maxX, minY, a.LevelZM),
+                        new Point3(maxX, maxY, a.LevelZM),
+                        new Point3(minX, maxY, a.LevelZM)
+                    };
+                    a.Placement = new Point3((minX + maxX) / 2.0, (minY + maxY) / 2.0, a.LevelZM);
+                    a.LengthM = a.Direction == ZoneDirection.X ? maxX - minX : maxY - minY;
+                    a.WidthM = a.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
+                    a.WidthMm = UnitConversion.MetersToMm(a.WidthM);
+                    a.BarCount = Math.Max(2, (int)Math.Ceiling(a.WidthMm / a.BarStepMm) + 1);
+                    a.WidthMm = (a.BarCount - 1) * a.BarStepMm;
+                    a.LengthMm = RebarTables.PickFamilyLength(UnitConversion.MetersToMm(a.LengthM));
+                    a.Comment = string.IsNullOrWhiteSpace(a.Comment) ? b.Comment : a.Comment;
+
+                    merged.RemoveAt(j);
+                    changed = true;
+                    break;
                 }
-                if (jUp + 1 < ny)
+            }
+
+            TrimZonesToActiveCells(merged, mosaic, settings);
+            EnforceZoneGaps(merged, mosaic.CellMm);
+            MergeCompatibleAlignedZones(merged);
+            NormalizeZoneLengths(merged, outline, settings.SlabEdgeInsetMm);
+            EnforceZoneGaps(merged, mosaic.CellMm);
+            FitZonesInsideSlab(merged, outline, settings.SlabEdgeInsetMm);
+            MergeActualOverlaps(merged);
+            TrimZonesToActiveCells(merged, mosaic, settings);
+            AddRecoveryZones(merged, mosaic, layer, settings, outline);
+            FitZonesInsideSlab(merged, outline, settings.SlabEdgeInsetMm);
+            MergeActualOverlaps(merged);
+            TrimZonesToActiveCells(merged, mosaic, settings);
+            NormalizeZoneLengths(merged, outline, settings.SlabEdgeInsetMm);
+            MergeActualOverlaps(merged);
+            TrimZonesToActiveCells(merged, mosaic, settings);
+            NormalizeZoneLengths(merged, outline, settings.SlabEdgeInsetMm);
+            AddRecoveryZones(merged, mosaic, layer, settings, outline);
+            MergeActualOverlaps(merged);
+            NormalizeZoneLengths(merged, outline, settings.SlabEdgeInsetMm);
+            AddRecoveryZones(merged, mosaic, layer, settings, outline);
+            for (var i = 0; i < merged.Count; i++)
+                merged[i].ZoneId = i + 1;
+            return merged;
+        }
+
+        private static void AddRecoveryZones(
+            List<AdditionalZone> zones,
+            MosaicGrid mosaic,
+            RebarLayer layer,
+            AnalysisSettings settings,
+            IList<Point3>? outline)
+        {
+            var cellM = mosaic.CellMm / 1000.0;
+            var activeIds = new HashSet<int>();
+            for (var iy = 0; iy < mosaic.Ny; iy++)
+            for (var ix = 0; ix < mosaic.Nx; ix++)
+            {
+                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                foreach (var id in mosaic.PlateIds[iy][ix]) activeIds.Add(id);
+            }
+            var uncoveredIds = new HashSet<int>(activeIds.Where(id =>
+                mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
+                !zones.Any(z => PointInsideZone(centroid, z))));
+            bool NeedsRecovery(int ix, int iy) =>
+                mosaic.Values[iy][ix] > 0.01 &&
+                mosaic.PlateIds[iy][ix].Any(uncoveredIds.Contains);
+
+            var visited = new bool[mosaic.Ny, mosaic.Nx];
+            for (var startY = 0; startY < mosaic.Ny; startY++)
+            for (var startX = 0; startX < mosaic.Nx; startX++)
+            {
+                if (visited[startY, startX] || !NeedsRecovery(startX, startY))
+                    continue;
+                var component = new List<(int Ix, int Iy)>();
+                var queue = new Queue<(int Ix, int Iy)>();
+                queue.Enqueue((startX, startY));
+                visited[startY, startX] = true;
+                while (queue.Count > 0)
                 {
-                    var ok = true;
-                    for (var ix = iLeft; ix <= iRight; ix++)
-                        if (area[jUp + 1][ix] < aThr) { ok = false; break; }
-                    if (ok) { jUp++; expanded = true; }
+                    var cell = queue.Dequeue();
+                    component.Add(cell);
+                    var neighbours = new[]
+                    {
+                        (cell.Ix - 1, cell.Iy), (cell.Ix + 1, cell.Iy),
+                        (cell.Ix, cell.Iy - 1), (cell.Ix, cell.Iy + 1)
+                    };
+                    foreach (var next in neighbours)
+                    {
+                        if (next.Item1 < 0 || next.Item1 >= mosaic.Nx ||
+                            next.Item2 < 0 || next.Item2 >= mosaic.Ny ||
+                            visited[next.Item2, next.Item1] || !NeedsRecovery(next.Item1, next.Item2))
+                            continue;
+                        visited[next.Item2, next.Item1] = true;
+                        queue.Enqueue((next.Item1, next.Item2));
+                    }
                 }
-            } while (expanded);
+
+                var elementIds = component
+                    .SelectMany(c => mosaic.PlateIds[c.Iy][c.Ix])
+                    .Where(uncoveredIds.Contains)
+                    .Distinct()
+                    .ToList();
+                if (settings.MinActiveElements > 0 && elementIds.Count < settings.MinActiveElements)
+                    continue;
+                var peak = component.Max(c => mosaic.Values[c.Iy][c.Ix]);
+                var backgroundDiameter = GetBackgroundDiameter(settings, layer);
+                var option = BarCapacity.SelectDiameterAndStep(
+                    peak, settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36,
+                    backgroundDiameter, settings.UseBarStep100);
+                if (option.DiameterMm <= 0) continue;
+
+                var minX = mosaic.OriginXM + component.Min(c => c.Ix) * cellM;
+                var maxX = mosaic.OriginXM + (component.Max(c => c.Ix) + 1) * cellM;
+                var minY = mosaic.OriginYM + component.Min(c => c.Iy) * cellM;
+                var maxY = mosaic.OriginYM + (component.Max(c => c.Iy) + 1) * cellM;
+                var centroids = elementIds
+                    .Where(mosaic.PlateCentroids.ContainsKey)
+                    .Select(id => mosaic.PlateCentroids[id])
+                    .ToList();
+                if (centroids.Count > 0)
+                {
+                    minX = Math.Min(minX, centroids.Min(p => p.X));
+                    maxX = Math.Max(maxX, centroids.Max(p => p.X));
+                    minY = Math.Min(minY, centroids.Min(p => p.Y));
+                    maxY = Math.Max(maxY, centroids.Max(p => p.Y));
+                }
+                var direction = RebarTables.DirectionForLayer(layer);
+                var concrete = RebarTables.NormalizeConcrete(settings.ConcreteClass);
+                var anchorageM = UnitConversion.MmToMeters(
+                    RebarTables.AnchorageLenMm(concrete, option.DiameterMm));
+                if (direction == ZoneDirection.X) { minX -= anchorageM; maxX += anchorageM; }
+                else { minY -= anchorageM; maxY += anchorageM; }
+
+                var spanMm = UnitConversion.MetersToMm(
+                    direction == ZoneDirection.X ? maxY - minY : maxX - minX);
+                var minWidthMm = SettingToMm(settings.MinZoneWidthM);
+                var widthMm = Math.Max(minWidthMm,
+                    Math.Ceiling(spanMm / option.StepMm) * option.StepMm);
+                var perpMid = direction == ZoneDirection.X ? (minY + maxY) / 2 : (minX + maxX) / 2;
+                if (direction == ZoneDirection.X)
+                {
+                    minY = perpMid - UnitConversion.MmToMeters(widthMm) / 2;
+                    maxY = perpMid + UnitConversion.MmToMeters(widthMm) / 2;
+                }
+                else
+                {
+                    minX = perpMid - UnitConversion.MmToMeters(widthMm) / 2;
+                    maxX = perpMid + UnitConversion.MmToMeters(widthMm) / 2;
+                }
+                var longStartMm = UnitConversion.MetersToMm(
+                    direction == ZoneDirection.X ? minX : minY);
+                var longEndMm = UnitConversion.MetersToMm(
+                    direction == ZoneDirection.X ? maxX : maxY);
+                var segments = SplitByMaxLength(
+                    longStartMm, longEndMm, option.DiameterMm, concrete, settings.AlphaCoef);
+
+                foreach (var (segmentStartMm, segmentEndMm) in segments)
+                {
+                    var desiredStartMm = segmentStartMm;
+                    var desiredEndMm = segmentEndMm;
+                    var initialFamilyLengthMm = RebarTables.PickFamilyLength(segmentEndMm - segmentStartMm);
+                    var initialMidMm = (segmentStartMm + segmentEndMm) / 2.0;
+                    var initialMinM = UnitConversion.MmToMeters(initialMidMm - initialFamilyLengthMm / 2.0);
+                    var initialMaxM = UnitConversion.MmToMeters(initialMidMm + initialFamilyLengthMm / 2.0);
+                    foreach (var existing in zones.Where(z =>
+                        z.Layer == layer && z.Direction == direction && z.LengthMm >= 11700 - 1))
+                    {
+                        var eMinX = existing.Contour.Min(p => p.X);
+                        var eMaxX = existing.Contour.Max(p => p.X);
+                        var eMinY = existing.Contour.Min(p => p.Y);
+                        var eMaxY = existing.Contour.Max(p => p.Y);
+                        var perpendicularOverlapM = direction == ZoneDirection.X
+                            ? Math.Min(maxY, eMaxY) - Math.Max(minY, eMinY)
+                            : Math.Min(maxX, eMaxX) - Math.Max(minX, eMinX);
+                        var longitudinalOverlapMm = UnitConversion.MetersToMm(direction == ZoneDirection.X
+                            ? Math.Min(initialMaxM, eMaxX) - Math.Max(initialMinM, eMinX)
+                            : Math.Min(initialMaxM, eMaxY) - Math.Max(initialMinM, eMinY));
+                        if (perpendicularOverlapM <= 1e-6 || longitudinalOverlapMm <= 1e-6)
+                            continue;
+                        var requiredOverlapMm = 2.0 * RebarTables.LapLenMm(
+                            concrete, Math.Max(option.DiameterMm, existing.DiameterMm));
+                        if (longitudinalOverlapMm + 1 < requiredOverlapMm)
+                        {
+                            var existingStartMm = UnitConversion.MetersToMm(
+                                direction == ZoneDirection.X ? eMinX : eMinY);
+                            var existingEndMm = UnitConversion.MetersToMm(
+                                direction == ZoneDirection.X ? eMaxX : eMaxY);
+                            var existingMidMm = (existingStartMm + existingEndMm) / 2.0;
+                            if (existingMidMm < initialMidMm)
+                                desiredStartMm = Math.Min(desiredStartMm, existingEndMm - requiredOverlapMm);
+                            else
+                                desiredEndMm = Math.Max(desiredEndMm, existingStartMm + requiredOverlapMm);
+                        }
+                    }
+                    var familyLengthMm = RebarTables.PickFamilyLength(desiredEndMm - desiredStartMm);
+                    var segmentMidMm = (desiredStartMm + desiredEndMm) / 2.0;
+                    var segmentMinM = UnitConversion.MmToMeters(segmentMidMm - familyLengthMm / 2.0);
+                    var segmentMaxM = UnitConversion.MmToMeters(segmentMidMm + familyLengthMm / 2.0);
+                    var zoneMinX = direction == ZoneDirection.X ? segmentMinM : minX;
+                    var zoneMaxX = direction == ZoneDirection.X ? segmentMaxM : maxX;
+                    var zoneMinY = direction == ZoneDirection.Y ? segmentMinM : minY;
+                    var zoneMaxY = direction == ZoneDirection.Y ? segmentMaxM : maxY;
+
+                    FitRectInsideSlabBounds(
+                        ref zoneMinX, ref zoneMaxX, ref zoneMinY, ref zoneMaxY,
+                        outline, settings.SlabEdgeInsetMm);
+
+                    var zone = new AdditionalZone
+                    {
+                        Layer = layer,
+                        NodeIds = elementIds,
+                        ElementId = elementIds.FirstOrDefault(),
+                        LevelZM = mosaic.LevelZM,
+                        Direction = direction,
+                        DiameterMm = option.DiameterMm,
+                        BarStepMm = option.StepMm,
+                        BarCount = Math.Max(2, (int)Math.Round(widthMm / option.StepMm) + 1),
+                        WidthMm = widthMm,
+                        WidthM = UnitConversion.MmToMeters(widthMm),
+                        LengthMm = familyLengthMm,
+                        LengthM = UnitConversion.MmToMeters(familyLengthMm),
+                        AsAdditional = peak,
+                        AsRequired = peak + GetAsMain(settings, layer),
+                        AsCoveredCm2PerM = BarCapacity.AsCm2PerM(option.DiameterMm, option.StepMm),
+                        ConcreteClass = concrete,
+                        FamilyKind = ZoneFamilyKind.Straight,
+                        FamilyFileName = settings.GetFamilyName(ZoneFamilyKind.Straight),
+                        CountInSpec = true,
+                        IsValid = true,
+                        StatusColor = "ok"
+                    };
+                    SetZoneBounds(zone, zoneMinX, zoneMaxX, zoneMinY, zoneMaxY);
+                    zone.LengthMm = familyLengthMm;
+                    zone.LengthM = UnitConversion.MmToMeters(familyLengthMm);
+                    zones.Add(zone);
+                }
+            }
+        }
+
+        private static bool PointInsideZone(Point3 point, AdditionalZone zone) =>
+            zone.Contour.Count >= 3 &&
+            point.X >= zone.Contour.Min(p => p.X) - 1e-6 &&
+            point.X <= zone.Contour.Max(p => p.X) + 1e-6 &&
+            point.Y >= zone.Contour.Min(p => p.Y) - 1e-6 &&
+            point.Y <= zone.Contour.Max(p => p.Y) + 1e-6;
+
+        private static void MergeActualOverlaps(List<AdditionalZone> zones)
+        {
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (var i = 0; i < zones.Count && !changed; i++)
+                for (var j = i + 1; j < zones.Count; j++)
+                {
+                    var a = zones[i];
+                    var b = zones[j];
+                    if (a.Layer != b.Layer || a.Contour.Count < 3 || b.Contour.Count < 3)
+                        continue;
+                    var aMinX = a.Contour.Min(p => p.X);
+                    var aMaxX = a.Contour.Max(p => p.X);
+                    var aMinY = a.Contour.Min(p => p.Y);
+                    var aMaxY = a.Contour.Max(p => p.Y);
+                    var bMinX = b.Contour.Min(p => p.X);
+                    var bMaxX = b.Contour.Max(p => p.X);
+                    var bMinY = b.Contour.Min(p => p.Y);
+                    var bMaxY = b.Contour.Max(p => p.Y);
+                    if (IsAllowedLapOverlap(
+                        a, b,
+                        aMinX, aMaxX, aMinY, aMaxY,
+                        bMinX, bMaxX, bMinY, bMaxY))
+                        continue;
+                    var overlapX = Math.Min(aMaxX, bMaxX) - Math.Max(aMinX, bMinX);
+                    var overlapY = Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY);
+                    var requiredGapM = UnitConversion.MmToMeters(Math.Min(a.BarStepMm, b.BarStepMm));
+                    var perpGapM = a.Direction == ZoneDirection.X
+                        ? Math.Max(0, -overlapY)
+                        : Math.Max(0, -overlapX);
+                    var longitudinalOverlapM = a.Direction == ZoneDirection.X ? overlapX : overlapY;
+                    var isLocalGapConflict = a.Direction == b.Direction &&
+                        longitudinalOverlapM > 1e-6 && perpGapM < requiredGapM - 1e-6;
+                    if (!RectanglesOverlapArea(
+                        aMinX, aMaxX, aMinY, aMaxY,
+                        bMinX, bMaxX, bMinY, bMaxY) && !isLocalGapConflict)
+                        continue;
+
+                    var governing = a.AsAdditional >= b.AsAdditional ? a : b;
+                    SetZoneBounds(
+                        a,
+                        Math.Min(aMinX, bMinX), Math.Max(aMaxX, bMaxX),
+                        Math.Min(aMinY, bMinY), Math.Max(aMaxY, bMaxY));
+                    a.NodeIds = a.NodeIds.Concat(b.NodeIds).Distinct().ToList();
+                    a.ElementId = a.NodeIds.FirstOrDefault();
+                    a.AsRequired = Math.Max(a.AsRequired, b.AsRequired);
+                    a.AsAdditional = Math.Max(a.AsAdditional, b.AsAdditional);
+                    a.DiameterMm = governing.DiameterMm;
+                    a.BarStepMm = governing.BarStepMm;
+                    a.AsCoveredCm2PerM = governing.AsCoveredCm2PerM;
+                    zones.RemoveAt(j);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        private static void FitZonesInsideSlab(
+            List<AdditionalZone> zones, IList<Point3>? outline, double slabEdgeInsetMm)
+        {
+            if (outline == null || outline.Count < 3) return;
+            for (var i = zones.Count - 1; i >= 0; i--)
+            {
+                var zone = zones[i];
+                if (zone.Contour.Count < 3)
+                {
+                    zones.RemoveAt(i);
+                    continue;
+                }
+                var minX = zone.Contour.Min(p => p.X);
+                var maxX = zone.Contour.Max(p => p.X);
+                var minY = zone.Contour.Min(p => p.Y);
+                var maxY = zone.Contour.Max(p => p.Y);
+                FitRectInsideSlabBounds(
+                    ref minX, ref maxX, ref minY, ref maxY,
+                    outline, slabEdgeInsetMm);
+                if (!MeshBoundary.ClipRectToSlab(
+                    ref minX, ref maxX, ref minY, ref maxY,
+                    outline, slabEdgeInsetMm) ||
+                    maxX - minX < 0.05 || maxY - minY < 0.05)
+                {
+                    zones.RemoveAt(i);
+                    continue;
+                }
+                SetZoneBounds(zone, minX, maxX, minY, maxY);
+            }
+        }
+
+        private static void NormalizeZoneLengths(
+            List<AdditionalZone> zones, IList<Point3>? outline, double slabEdgeInsetMm)
+        {
+            for (var i = zones.Count - 1; i >= 0; i--)
+            {
+                var zone = zones[i];
+                if (zone.Contour.Count < 3)
+                {
+                    zones.RemoveAt(i);
+                    continue;
+                }
+                var minX = zone.Contour.Min(p => p.X);
+                var maxX = zone.Contour.Max(p => p.X);
+                var minY = zone.Contour.Min(p => p.Y);
+                var maxY = zone.Contour.Max(p => p.Y);
+                var availableMm = UnitConversion.MetersToMm(
+                    zone.Direction == ZoneDirection.X ? maxX - minX : maxY - minY);
+                if (availableMm < 1)
+                {
+                    zones.RemoveAt(i);
+                    continue;
+                }
+                if (zone.FamilyKind == ZoneFamilyKind.Straight)
+                {
+                    // Только SUM-30 использует строгий ряд типовых длин вверх.
+                    var requiredMm = Math.Max(1, Math.Ceiling(availableMm - 0.5));
+                    var familyLengthMm = RebarTables.PickFamilyLength(requiredMm);
+                    CenterAlongLength(
+                        ref minX, ref maxX, ref minY, ref maxY,
+                        zone.Direction, familyLengthMm);
+                    FitRectInsideSlabBounds(
+                        ref minX, ref maxX, ref minY, ref maxY,
+                        outline, slabEdgeInsetMm);
+                    zone.Contour = new List<Point3>
+                    {
+                        new Point3(minX, minY, zone.LevelZM),
+                        new Point3(maxX, minY, zone.LevelZM),
+                        new Point3(maxX, maxY, zone.LevelZM),
+                        new Point3(minX, maxY, zone.LevelZM)
+                    };
+                    zone.Placement = new Point3((minX + maxX) / 2.0, (minY + maxY) / 2.0, zone.LevelZM);
+                    zone.LengthMm = familyLengthMm;
+                    zone.LengthM = UnitConversion.MmToMeters(familyLengthMm);
+                }
+                else
+                {
+                    // Для гнутой детали контур остаётся плановой частью, а параметр L
+                    // содержит полную длину заготовки с вертикальными полками.
+                    zone.LengthM = UnitConversion.MmToMeters(availableMm);
+                    zone.LengthMm = RebarTables.BentBarTotalLengthMm(
+                        availableMm, zone.VerticalLegMm, zone.FamilyKind);
+                }
+                zone.WidthM = zone.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
+            }
+        }
+
+        private static void MergeCompatibleAlignedZones(List<AdditionalZone> zones)
+        {
+            const double toleranceM = 0.011;
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (var i = 0; i < zones.Count && !changed; i++)
+                for (var j = i + 1; j < zones.Count; j++)
+                {
+                    var a = zones[i];
+                    var b = zones[j];
+                    if (a.Layer != b.Layer || a.Direction != b.Direction ||
+                        a.DiameterMm != b.DiameterMm || a.BarStepMm != b.BarStepMm ||
+                        Math.Abs(a.LengthMm - b.LengthMm) > 1 ||
+                        a.Contour.Count < 3 || b.Contour.Count < 3)
+                        continue;
+
+                    var aMinX = a.Contour.Min(p => p.X);
+                    var aMaxX = a.Contour.Max(p => p.X);
+                    var aMinY = a.Contour.Min(p => p.Y);
+                    var aMaxY = a.Contour.Max(p => p.Y);
+                    var bMinX = b.Contour.Min(p => p.X);
+                    var bMaxX = b.Contour.Max(p => p.X);
+                    var bMinY = b.Contour.Min(p => p.Y);
+                    var bMaxY = b.Contour.Max(p => p.Y);
+                    var aligned = a.Direction == ZoneDirection.X
+                        ? Math.Abs(aMinX - bMinX) <= toleranceM && Math.Abs(aMaxX - bMaxX) <= toleranceM
+                        : Math.Abs(aMinY - bMinY) <= toleranceM && Math.Abs(aMaxY - bMaxY) <= toleranceM;
+                    if (!aligned) continue;
+
+                    var perpGap = a.Direction == ZoneDirection.X
+                        ? Math.Max(0, Math.Max(aMinY, bMinY) - Math.Min(aMaxY, bMaxY))
+                        : Math.Max(0, Math.Max(aMinX, bMinX) - Math.Min(aMaxX, bMaxX));
+                    if (perpGap > UnitConversion.MmToMeters(a.BarStepMm) + 1e-6)
+                        continue;
+
+                    var minX = Math.Min(aMinX, bMinX);
+                    var maxX = Math.Max(aMaxX, bMaxX);
+                    var minY = Math.Min(aMinY, bMinY);
+                    var maxY = Math.Max(aMaxY, bMaxY);
+                    a.Contour = new List<Point3>
+                    {
+                        new Point3(minX, minY, a.LevelZM),
+                        new Point3(maxX, minY, a.LevelZM),
+                        new Point3(maxX, maxY, a.LevelZM),
+                        new Point3(minX, maxY, a.LevelZM)
+                    };
+                    a.Placement = new Point3((minX + maxX) / 2.0, (minY + maxY) / 2.0, a.LevelZM);
+                    a.NodeIds = a.NodeIds.Concat(b.NodeIds).Distinct().ToList();
+                    a.ElementId = a.NodeIds.FirstOrDefault();
+                    a.AsRequired = Math.Max(a.AsRequired, b.AsRequired);
+                    a.AsAdditional = Math.Max(a.AsAdditional, b.AsAdditional);
+                    a.AsCoveredCm2PerM = Math.Max(a.AsCoveredCm2PerM, b.AsCoveredCm2PerM);
+                    a.LengthM = a.Direction == ZoneDirection.X ? maxX - minX : maxY - minY;
+                    a.WidthM = a.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
+                    a.WidthMm = UnitConversion.MetersToMm(a.WidthM);
+                    a.BarCount = Math.Max(2, (int)Math.Round(a.WidthMm / a.BarStepMm) + 1);
+                    zones.RemoveAt(j);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        private static void TrimZonesToActiveCells(
+            List<AdditionalZone> zones, MosaicGrid mosaic, AnalysisSettings settings)
+        {
+            var cellM = mosaic.CellMm / 1000.0;
+            for (var zoneIndex = zones.Count - 1; zoneIndex >= 0; zoneIndex--)
+            {
+                var zone = zones[zoneIndex];
+                if (zone.Contour.Count < 3)
+                {
+                    zones.RemoveAt(zoneIndex);
+                    continue;
+                }
+                var minX = zone.Contour.Min(p => p.X);
+                var maxX = zone.Contour.Max(p => p.X);
+                var minY = zone.Contour.Min(p => p.Y);
+                var maxY = zone.Contour.Max(p => p.Y);
+                var originalBounds = (MinX: minX, MaxX: maxX, MinY: minY, MaxY: maxY);
+                var active = new List<(int Ix, int Iy)>();
+                for (var iy = 0; iy < mosaic.Ny; iy++)
+                for (var ix = 0; ix < mosaic.Nx; ix++)
+                {
+                    if (mosaic.Values[iy][ix] <= 0.01)
+                        continue;
+                    var cx = mosaic.OriginXM + (ix + 0.5) * cellM;
+                    var cy = mosaic.OriginYM + (iy + 0.5) * cellM;
+                    if (cx >= minX - 1e-6 && cx <= maxX + 1e-6 &&
+                        cy >= minY - 1e-6 && cy <= maxY + 1e-6)
+                        active.Add((ix, iy));
+                }
+
+                if (active.Count == 0)
+                {
+                    zones.RemoveAt(zoneIndex);
+                    continue;
+                }
+                zone.NodeIds = active
+                    .SelectMany(c => mosaic.PlateIds[c.Iy][c.Ix])
+                    .Distinct()
+                    .ToList();
+                zone.ElementId = zone.NodeIds.FirstOrDefault();
+
+                double coreMin, coreMax;
+                if (zone.Direction == ZoneDirection.X)
+                {
+                    coreMin = mosaic.OriginYM + active.Min(c => c.Iy) * cellM;
+                    coreMax = mosaic.OriginYM + (active.Max(c => c.Iy) + 1) * cellM;
+                }
+                else
+                {
+                    coreMin = mosaic.OriginXM + active.Min(c => c.Ix) * cellM;
+                    coreMax = mosaic.OriginXM + (active.Max(c => c.Ix) + 1) * cellM;
+                }
+
+                var stepMm = Math.Max(1, zone.BarStepMm);
+                var widthMm = Math.Ceiling(UnitConversion.MetersToMm(coreMax - coreMin) / stepMm) * stepMm;
+                widthMm = Math.Max(widthMm, SettingToMm(settings.MinZoneWidthM));
+                var widthM = UnitConversion.MmToMeters(widthMm);
+                var mid = (coreMin + coreMax) / 2.0;
+                var trimMin = mid - widthM / 2.0;
+                var trimMax = mid + widthM / 2.0;
+                if (zone.Direction == ZoneDirection.X)
+                {
+                    minY = Math.Max(minY, trimMin);
+                    maxY = Math.Min(maxY, trimMax);
+                }
+                else
+                {
+                    minX = Math.Max(minX, trimMin);
+                    maxX = Math.Min(maxX, trimMax);
+                }
+                if (maxX - minX < 0.05 || maxY - minY < 0.05)
+                {
+                    zones.RemoveAt(zoneIndex);
+                    continue;
+                }
+
+                zone.Contour = new List<Point3>
+                {
+                    new Point3(minX, minY, zone.LevelZM),
+                    new Point3(maxX, minY, zone.LevelZM),
+                    new Point3(maxX, maxY, zone.LevelZM),
+                    new Point3(minX, maxY, zone.LevelZM)
+                };
+                zone.Placement = new Point3((minX + maxX) / 2.0, (minY + maxY) / 2.0, zone.LevelZM);
+                zone.LengthM = zone.Direction == ZoneDirection.X ? maxX - minX : maxY - minY;
+                zone.WidthM = zone.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
+                zone.WidthMm = UnitConversion.MetersToMm(zone.WidthM);
+                var minWidthMm = SettingToMm(settings.MinZoneWidthM);
+                if (minWidthMm > 0 && zone.WidthMm + 1 < minWidthMm)
+                {
+                    minX = originalBounds.MinX;
+                    maxX = originalBounds.MaxX;
+                    minY = originalBounds.MinY;
+                    maxY = originalBounds.MaxY;
+                    zone.Contour = new List<Point3>
+                    {
+                        new Point3(minX, minY, zone.LevelZM),
+                        new Point3(maxX, minY, zone.LevelZM),
+                        new Point3(maxX, maxY, zone.LevelZM),
+                        new Point3(minX, maxY, zone.LevelZM)
+                    };
+                    zone.Placement = new Point3((minX + maxX) / 2.0, (minY + maxY) / 2.0, zone.LevelZM);
+                    zone.LengthM = zone.Direction == ZoneDirection.X ? maxX - minX : maxY - minY;
+                    zone.WidthM = zone.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
+                    zone.WidthMm = minWidthMm;
+                }
+                zone.BarCount = Math.Max(2, (int)Math.Round(zone.WidthMm / stepMm) + 1);
+            }
+        }
+
+        private static void EnforceZoneGaps(List<AdditionalZone> zones, int gridCellMm)
+        {
+            foreach (var layerGroup in zones.GroupBy(z => z.Layer))
+            {
+                var direction = layerGroup.First().Direction;
+                var ordered = layerGroup
+                    .OrderBy(z => direction == ZoneDirection.X ? z.Placement.Y : z.Placement.X)
+                    .ToList();
+                for (var i = 0; i < ordered.Count; i++)
+                {
+                    var nearestHandled = false;
+                    for (var j = i + 1; j < ordered.Count; j++)
+                    {
+                        var a = ordered[i];
+                        var b = ordered[j];
+                        if (a.Contour.Count < 3 || b.Contour.Count < 3)
+                            continue;
+                        var aMinX = a.Contour.Min(p => p.X);
+                        var aMaxX = a.Contour.Max(p => p.X);
+                        var aMinY = a.Contour.Min(p => p.Y);
+                        var aMaxY = a.Contour.Max(p => p.Y);
+                        var bMinX = b.Contour.Min(p => p.X);
+                        var bMaxX = b.Contour.Max(p => p.X);
+                        var bMinY = b.Contour.Min(p => p.Y);
+                        var bMaxY = b.Contour.Max(p => p.Y);
+                        var overlapX = Math.Min(aMaxX, bMaxX) - Math.Max(aMinX, bMinX);
+                        var overlapY = Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY);
+                        var required = UnitConversion.MmToMeters(Math.Min(a.BarStepMm, b.BarStepMm));
+                        if (IsAllowedLapOverlap(
+                            a, b,
+                            aMinX, aMaxX, aMinY, aMaxY,
+                            bMinX, bMaxX, bMinY, bMaxY))
+                            continue;
+                        if (direction == ZoneDirection.X && overlapX <= 1e-6) continue;
+                        if (direction == ZoneDirection.Y && overlapY <= 1e-6) continue;
+
+                        double dx = 0, dy = 0;
+                        if (direction == ZoneDirection.Y)
+                        {
+                            var gapX = bMinX - aMaxX;
+                            if (gapX < required - 1e-6)
+                                dx = aMaxX + required - bMinX;
+                            else if (!nearestHandled && gapX > required + 1e-6 &&
+                                     gapX <= required + UnitConversion.MmToMeters(gridCellMm) + 1e-6)
+                            {
+                                aMaxX = bMinX - required;
+                                SetZoneBounds(a, aMinX, aMaxX, aMinY, aMaxY);
+                            }
+                        }
+                        else
+                        {
+                            var gapY = bMinY - aMaxY;
+                            if (gapY < required - 1e-6)
+                                dy = aMaxY + required - bMinY;
+                            else if (!nearestHandled && gapY > required + 1e-6 &&
+                                     gapY <= required + UnitConversion.MmToMeters(gridCellMm) + 1e-6)
+                            {
+                                aMaxY = bMinY - required;
+                                SetZoneBounds(a, aMinX, aMaxX, aMinY, aMaxY);
+                            }
+                        }
+                        nearestHandled = true;
+                        if (Math.Abs(dx) >= 1e-9 || Math.Abs(dy) >= 1e-9)
+                        {
+                            foreach (var p in b.Contour)
+                            {
+                                p.X += dx;
+                                p.Y += dy;
+                            }
+                            b.Placement = new Point3(
+                                b.Placement.X + dx, b.Placement.Y + dy, b.Placement.Z);
+                        }
+                    }
+                }
+            }
+        }
+
+        private static bool IsAllowedLapOverlap(
+            AdditionalZone a, AdditionalZone b,
+            double aMinX, double aMaxX, double aMinY, double aMaxY,
+            double bMinX, double bMaxX, double bMinY, double bMaxY)
+        {
+            if (a.Layer != b.Layer || a.Direction != b.Direction) return false;
+            var allowedMm = RebarTables.AllowedZoneOverlapMm(a, b);
+            if (allowedMm <= 0) return false;
+            var longitudinalOverlapM = a.Direction == ZoneDirection.X
+                ? Math.Min(aMaxX, bMaxX) - Math.Max(aMinX, bMinX)
+                : Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY);
+            var perpendicularOverlapM = a.Direction == ZoneDirection.X
+                ? Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY)
+                : Math.Min(aMaxX, bMaxX) - Math.Max(aMinX, bMinX);
+            return perpendicularOverlapM > 1e-6 &&
+                   longitudinalOverlapM > 1e-6 &&
+                   UnitConversion.MetersToMm(longitudinalOverlapM) + 1 >= allowedMm;
+        }
+
+        private static void SetZoneBounds(
+            AdditionalZone zone, double minX, double maxX, double minY, double maxY)
+        {
+            zone.Contour = new List<Point3>
+            {
+                new Point3(minX, minY, zone.LevelZM),
+                new Point3(maxX, minY, zone.LevelZM),
+                new Point3(maxX, maxY, zone.LevelZM),
+                new Point3(minX, maxY, zone.LevelZM)
+            };
+            zone.Placement = new Point3((minX + maxX) / 2.0, (minY + maxY) / 2.0, zone.LevelZM);
+            zone.LengthM = zone.Direction == ZoneDirection.X ? maxX - minX : maxY - minY;
+            zone.WidthM = zone.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
+            zone.WidthMm = UnitConversion.MetersToMm(zone.WidthM);
+            zone.BarCount = Math.Max(2, (int)Math.Ceiling(zone.WidthMm / zone.BarStepMm) + 1);
+            zone.WidthMm = (zone.BarCount - 1) * zone.BarStepMm;
+        }
+
+        private static void FitRectInsideSlabBounds(
+            ref double minXM, ref double maxXM, ref double minYM, ref double maxYM,
+            IList<Point3>? outline, double insetMm)
+        {
+            if (outline == null || outline.Count < 3) return;
+            var inset = Math.Max(0, insetMm) / 1000.0;
+            var slabMinX = outline.Min(p => p.X) + inset;
+            var slabMaxX = outline.Max(p => p.X) - inset;
+            var slabMinY = outline.Min(p => p.Y) + inset;
+            var slabMaxY = outline.Max(p => p.Y) - inset;
+
+            if (maxXM - minXM <= slabMaxX - slabMinX)
+            {
+                var dx = minXM < slabMinX ? slabMinX - minXM
+                    : maxXM > slabMaxX ? slabMaxX - maxXM
+                    : 0;
+                minXM += dx;
+                maxXM += dx;
+            }
+            if (maxYM - minYM <= slabMaxY - slabMinY)
+            {
+                var dy = minYM < slabMinY ? slabMinY - minYM
+                    : maxYM > slabMaxY ? slabMaxY - maxYM
+                    : 0;
+                minYM += dy;
+                maxYM += dy;
+            }
         }
 
         /// <summary>
@@ -525,8 +1341,8 @@ namespace LiraSlabZones.Core
         /// </summary>
         private static bool ResolvePerpGap(
             ref double minXM, ref double maxXM, ref double minYM, ref double maxYM,
-            ZoneDirection direction, double gapM,
-            List<(double MinX, double MaxX, double MinY, double MaxY)> placed)
+            ZoneDirection direction, int currentStepMm,
+            List<(double MinX, double MaxX, double MinY, double MaxY, int StepMm)> placed)
         {
             const int maxIter = 16;
             var origMinX = minXM;
@@ -540,6 +1356,7 @@ namespace LiraSlabZones.Core
                 var moved = false;
                 foreach (var p in placed)
                 {
+                    var gapM = UnitConversion.MmToMeters(Math.Min(currentStepMm, p.StepMm));
                     var aMinX = minXM - (direction == ZoneDirection.Y ? gapM : 0);
                     var aMaxX = maxXM + (direction == ZoneDirection.Y ? gapM : 0);
                     var aMinY = minYM - (direction == ZoneDirection.X ? gapM : 0);
@@ -585,12 +1402,17 @@ namespace LiraSlabZones.Core
 
             foreach (var p in placed)
             {
+                var gapM = UnitConversion.MmToMeters(Math.Min(currentStepMm, p.StepMm));
                 var aMinX = minXM - (direction == ZoneDirection.Y ? gapM : 0);
                 var aMaxX = maxXM + (direction == ZoneDirection.Y ? gapM : 0);
                 var aMinY = minYM - (direction == ZoneDirection.X ? gapM : 0);
                 var aMaxY = maxYM + (direction == ZoneDirection.X ? gapM : 0);
                 if (!(aMaxX <= p.MinX || aMinX >= p.MaxX || aMaxY <= p.MinY || aMinY >= p.MaxY))
+                {
+                    minXM = origMinX; maxXM = origMaxX;
+                    minYM = origMinY; maxYM = origMaxY;
                     return false;
+                }
             }
             return true;
         }

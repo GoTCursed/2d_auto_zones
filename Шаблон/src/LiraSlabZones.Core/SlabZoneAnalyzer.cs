@@ -192,8 +192,16 @@ namespace LiraSlabZones.Core
                         (settings.MinZoneLengthM > 0 && plate.LengthM < settings.MinZoneLengthM);
 
                     var dir = RebarTables.DirectionForLayer(layer);
-                    var step = settings.BarStepMm is 100 or 200 ? settings.BarStepMm : 200;
-                    var d = BarCapacity.MinDiameterForAs(asAdd, step, settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36);
+                    var backgroundDiameter = layer is RebarLayer.As1 or RebarLayer.As2
+                        ? settings.BgBottomDiameterMm
+                        : settings.BgTopDiameterMm;
+                    var option = BarCapacity.SelectDiameterAndStep(
+                        asAdd,
+                        settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36,
+                        backgroundDiameter,
+                        settings.UseBarStep100);
+                    var step = option.StepMm;
+                    var d = option.DiameterMm;
                     var span = UnitConversion.MetersToMm(Math.Min(plate.WidthM, plate.LengthM));
                     var (barCount, widthMm) = BarCapacity.BarsForSpanAndAs(asAdd, d, step, span);
 
@@ -310,8 +318,32 @@ namespace LiraSlabZones.Core
                 Newtonsoft.Json.JsonConvert.SerializeObject(payload, Newtonsoft.Json.Formatting.Indented));
         }
 
-        public static AnalysisResult LoadJson(string path) =>
-            Newtonsoft.Json.JsonConvert.DeserializeObject<AnalysisResult>(System.IO.File.ReadAllText(path))
-            ?? throw new System.IO.InvalidDataException("Пустой JSON анализа: " + path);
+        public static AnalysisResult LoadJson(string path, AnalysisSettings? fallbackSettings = null)
+        {
+            var result = new AnalysisResult { Settings = fallbackSettings ?? new AnalysisSettings() };
+            using (var file = System.IO.File.OpenText(path))
+            using (var reader = new Newtonsoft.Json.JsonTextReader(file))
+                Newtonsoft.Json.JsonSerializer.CreateDefault().Populate(reader, result);
+
+            result.AllPlates = MeshBoundary.FilterHorizontalPlates(result.Plates);
+            if (result.AvailableLevels.Count == 0)
+                result.AvailableLevels = MeshBoundary.CollectLevels(result.AllPlates, null);
+
+            if (result.AllPlates.Count > 0)
+            {
+                var (levelPlates, _) = SelectLevel(result.AllPlates, result.Settings, result.AvailableLevels);
+                result.Settings.GridCellMm = MeshBoundary.EstimateGridCellMm(
+                    levelPlates, result.Settings.GridCellMm > 0 ? result.Settings.GridCellMm : 300);
+            }
+
+            // Экспорт всех плит не содержит зон и настроек. Считаем выбранный этаж,
+            // сохраняя остальные плиты для последующей смены отметки.
+            if (result.Zones.Count == 0 && result.AllPlates.Count > 0)
+            {
+                var (_, elevation) = SelectLevel(result.AllPlates, result.Settings, result.AvailableLevels);
+                return RebuildForElevation(result, elevation, result.Settings);
+            }
+            return result;
+        }
     }
 }

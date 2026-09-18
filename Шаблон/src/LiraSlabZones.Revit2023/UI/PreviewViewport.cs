@@ -752,7 +752,7 @@ namespace LiraSlabZones.Revit2023.UI
             return string.IsNullOrEmpty(b) ? a : a + "\n" + b;
         }
 
-        /// <summary>Формат как в Revit: «12-3900» / «шаг 200».</summary>
+        /// <summary>Ø-длина и поперечная раскладка: число стержней, шаг, ширина зоны.</summary>
         private static (string Line1, string Line2) BuildZoneLabelLines(AdditionalZone zone)
         {
             if (zone.DiameterMm <= 0) return ("", "");
@@ -761,7 +761,11 @@ namespace LiraSlabZones.Revit2023.UI
                 : (int)Math.Round(UnitConversion.MetersToMm(zone.LengthM));
             if (lenMm < 1) lenMm = zone.BarCount > 0 ? zone.BarCount : 0;
             var step = zone.BarStepMm > 0 ? zone.BarStepMm : 200;
-            return ($"{zone.DiameterMm}-{lenMm}", $"шаг {step}");
+            var widthMm = zone.WidthMm > 0
+                ? (int)Math.Round(zone.WidthMm)
+                : (int)Math.Round(UnitConversion.MetersToMm(zone.WidthM));
+            var count = Math.Max(1, zone.BarCount);
+            return ($"{zone.DiameterMm}-{lenMm} ×{count}", $"шаг {step} · B{widthMm}");
         }
 
         /// <summary>

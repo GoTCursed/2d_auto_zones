@@ -163,7 +163,7 @@
                     ValueChanged="DetailChanged"/>
             <TextBlock x:Name="TxtDetail" Text="Max" HorizontalAlignment="Right" Foreground="#6B7280"/>
             <TextBlock Text="Max · 4 · 3 · 2 · Min" FontSize="10" Foreground="#9CA3AF" HorizontalAlignment="Stretch"/>
-            <CheckBox x:Name="ChkBarStep100" Content="Расставлять зоны с шагом 100 мм"
+              <CheckBox x:Name="ChkBarStep100" Content="Разрешить шаги 100 и 200 мм"
                       Checked="SettingsChanged" Unchecked="SettingsChanged"/>
             <TextBlock Text="Класс бетона (анкеровка → длина SUM-3)"/>
             <ComboBox x:Name="CmbConcrete" Height="26" Margin="0,0,0,4" SelectionChanged="SettingsChanged">

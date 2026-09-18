@@ -191,7 +191,10 @@ namespace LiraSlabZones.Revit2023.UI
         {
             var dlg = new OpenFileDialog { Filter = "JSON (*.json)|*.json", Title = "JSON зон" };
             if (dlg.ShowDialog() != true) return;
-            try { LoadResult(SlabZoneAnalyzer.LoadJson(dlg.FileName)); }
+            try
+            {
+                LoadResult(SlabZoneAnalyzer.LoadJson(dlg.FileName, ReadSettingsFromUi()));
+            }
             catch (Exception ex)
             {
                 Log(ex.Message, "error");

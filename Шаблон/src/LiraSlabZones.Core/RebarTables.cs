@@ -91,6 +91,19 @@ namespace LiraSlabZones.Core
             return CeilToStep(Lap[c][d], 50);
         }
 
+        /// <summary>
+        /// Минимальное продольное перекрытие двух зон. Оно применяется только для
+        /// стыка с зоной длиной 11700 мм и равно двум нахлёстам большего Ø.
+        /// </summary>
+        public static int AllowedZoneOverlapMm(AdditionalZone first, AdditionalZone second)
+        {
+            if (Math.Abs(first.LengthMm - 11700) > 1 &&
+                Math.Abs(second.LengthMm - 11700) > 1)
+                return 0;
+            var governing = first.DiameterMm >= second.DiameterMm ? first : second;
+            return 2 * LapLenMm(governing.ConcreteClass, governing.DiameterMm);
+        }
+
         public static int MandrelDiamMm(int diameterMm)
         {
             var d = NearestSupportedDiameter(diameterMm, Mandrel.Keys);
@@ -102,6 +115,17 @@ namespace LiraSlabZones.Core
             foreach (var L in Sum3FamilyLengthsMm)
                 if (L >= requiredLenMm) return L;
             return Sum3FamilyLengthsMm[Sum3FamilyLengthsMm.Length - 1];
+        }
+
+        /// <summary>
+        /// Полная длина гнутого стержня: видимая на плане часть плюс вертикальные полки.
+        /// Типовой ряд прямых SUM-30 к гнутым семействам не применяется.
+        /// </summary>
+        public static int BentBarTotalLengthMm(
+            double planLengthMm, double verticalLegMm, ZoneFamilyKind familyKind)
+        {
+            var legCount = familyKind is ZoneFamilyKind.PEqual or ZoneFamilyKind.PDiff ? 2 : 1;
+            return CeilToStep(Math.Max(0, planLengthMm) + legCount * Math.Max(0, verticalLegMm), 10);
         }
 
         /// <summary>Максимальная длина SUM-3, не превышающая доступный габарит (подрезка краем плиты).</summary>

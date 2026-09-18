@@ -508,6 +508,16 @@ namespace LiraSlabZones.Core
                 if (contour.Count < 3) return;
 
                 contour = ContourFix.OrderAsSimplePolygon(contour);
+                // Номера узлов должны следовать тому же обходу, что и координаты.
+                var remainingIds = nodeIds.Where(nodes.ContainsKey).ToList();
+                nodeIds = contour.Select(p =>
+                {
+                    var index = remainingIds.FindIndex(nid =>
+                        nodes[nid].Coord.X == p.X && nodes[nid].Coord.Y == p.Y && nodes[nid].Coord.Z == p.Z);
+                    var nid = remainingIds[index];
+                    remainingIds.RemoveAt(index);
+                    return nid;
+                }).ToList();
                 ContourFix.EdgeAlignedSize(contour, out var w, out var len);
 
                 double sx2 = 0, sy2 = 0, sz2 = 0;

@@ -204,6 +204,12 @@ namespace LiraSlabZones.Core
         public List<AdditionalZone> Zones { get; set; } = new List<AdditionalZone>();
         public List<ConstructionAxis> Axes { get; set; } = new List<ConstructionAxis>();
         public List<ElevationLevelInfo> AvailableLevels { get; set; } = new List<ElevationLevelInfo>();
+
+        [Newtonsoft.Json.JsonProperty("Levels")]
+        private List<ElevationLevelInfo> ExportedLevels
+        {
+            set { if (value != null) AvailableLevels = value; }
+        }
         public List<OpeningInfo> Openings { get; set; } = new List<OpeningInfo>();
 
         /// <summary>Средняя Z выбранного уровня, м.</summary>
@@ -362,7 +368,7 @@ namespace LiraSlabZones.Core
         public double EdgeOffsetMm { get; set; } = 50;
         /// <summary>Отступ зон от края плиты (контура), мм.</summary>
         public double SlabEdgeInsetMm { get; set; } = 30;
-        /// <summary>true → шаг стержней 100 мм, иначе 200.</summary>
+        /// <summary>true → разрешить подбор из шагов 100 и 200 мм; false → только 200 мм.</summary>
         public bool UseBarStep100 { get; set; }
 
         /// <summary>Пересчитать AsMainAs1…4 из Ø/шага фона (низ → As1/As2, верх → As3/As4).</summary>

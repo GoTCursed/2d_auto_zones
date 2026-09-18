@@ -24,16 +24,44 @@ namespace LiraSlabZones.Core
         public static double SteelKgPerM(int diameterMm) => BarAreaMm2(diameterMm) * 7.85e-3;
 
         /// <summary>Минимальный Ø ≤ maxDiameter, дающий As ≥ required при заданном шаге.</summary>
-        public static int MinDiameterForAs(double requiredAsCm2PerM, int stepMm, int maxDiameterMm)
+        public static int MinDiameterForAs(
+            double requiredAsCm2PerM, int stepMm, int maxDiameterMm, int minDiameterMm = 0)
         {
             if (requiredAsCm2PerM <= 0.01) return 0;
             var maxD = Math.Min(maxDiameterMm, RebarTables.AllowedDiametersMm.Max());
-            foreach (var d in RebarTables.AllowedDiametersMm.Where(x => x <= maxD))
+            foreach (var d in RebarTables.AllowedDiametersMm.Where(x => x >= minDiameterMm && x <= maxD))
             {
                 if (AsCm2PerM(d, stepMm) + 1e-9 >= requiredAsCm2PerM)
                     return d;
             }
-            return maxD;
+            return RebarTables.AllowedDiametersMm
+                .Where(x => x >= minDiameterMm && x <= maxD)
+                .DefaultIfEmpty(0)
+                .Max();
+        }
+
+        /// <summary>
+        /// Выбирает наиболее экономичную допустимую пару Ø/шаг.
+        /// При allowStep100=false используется только шаг 200 мм.
+        /// </summary>
+        public static (int DiameterMm, int StepMm) SelectDiameterAndStep(
+            double requiredAsCm2PerM, int maxDiameterMm, int minDiameterMm, bool allowStep100)
+        {
+            var steps = allowStep100 ? new[] { 200, 100 } : new[] { 200 };
+            var options = steps
+                .Select(step =>
+                {
+                    var diameter = MinDiameterForAs(requiredAsCm2PerM, step, maxDiameterMm, minDiameterMm);
+                    var capacity = diameter > 0 ? AsCm2PerM(diameter, step) : 0;
+                    return new { Diameter = diameter, Step = step, Capacity = capacity };
+                })
+                .Where(x => x.Diameter > 0)
+                .OrderByDescending(x => x.Capacity + 1e-9 >= requiredAsCm2PerM)
+                .ThenBy(x => x.Capacity)
+                .ThenByDescending(x => x.Step)
+                .FirstOrDefault();
+
+            return options == null ? (0, 200) : (options.Diameter, options.Step);
         }
 
         /// <summary>Число стержней: ширина = (N-1)*step ≥ spanMm, и As покрытия.</summary>

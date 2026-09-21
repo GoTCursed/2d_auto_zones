@@ -33,8 +33,7 @@ foreach ($version in @(2022, 2023, 2025, 2026)) {
     Copy-Item (Join-Path $root "DefaultSettings.cfg") $target -Force
 }
 
-Copy-Item (Join-Path $previewBin "LiraSlabZones.PreviewHost.exe") (Join-Path $stage "tools") -Force
-Copy-Item (Join-Path $previewBin "*.dll") (Join-Path $stage "tools") -Force
+& (Join-Path $root "tools\publish-preview.ps1") -Configuration Release
 $def = Join-Path $root "DefaultSettings.cfg"
 if (Test-Path -LiteralPath $def) {
     Copy-Item $def (Join-Path $stage "data\DefaultSettings.cfg") -Force

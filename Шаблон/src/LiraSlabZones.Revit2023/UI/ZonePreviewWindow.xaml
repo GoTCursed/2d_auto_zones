@@ -130,7 +130,7 @@
         <GroupBox Header="Семейства зон (из проекта Revit)">
           <StackPanel>
             <TextBlock TextWrapping="Wrap" Foreground="#6B7280" FontSize="11" Margin="0,0,0,4"
-                       Text="Имена семейств, уже загруженных в проект. Плагин .rfa не подгружает. Сохраняются в %APPDATA%\…\Addins\2023\LiraSlabZones.cfg"/>
+                       Text="Имена семейств, уже загруженных в проект. Плагин .rfa не подгружает. Сохраняются в каталоге Addins текущей версии Revit."/>
             <TextBlock Text="Прямая (SUM-30)" FontSize="11" Foreground="#6B7280"/>
             <ComboBox x:Name="CmbZoneFamily" Height="26" IsEditable="True"
                       ToolTip="Имя прямой зоны — выбор из проекта или ввод вручную"/>
@@ -144,7 +144,7 @@
             <TextBox x:Name="TbFamilyBent" LostFocus="SettingsChanged"/>
             <Button Content="Сохранить имена в user cfg" Style="{StaticResource SecondaryBtn}" Margin="0,8,0,0"
                     Click="BtnSaveUserCfg_Click"
-                    ToolTip="Записать в %APPDATA%\Roaming\Autodesk\Revit\Addins\2023\LiraSlabZones.cfg"/>
+                    ToolTip="Записать настройки в каталог Addins текущей версии Revit"/>
             <TextBlock x:Name="TxtZoneFamilyHint" TextWrapping="Wrap" FontSize="10" Foreground="#9CA3AF" Margin="0,4,0,0"
                        Text="Дефолты: DefaultSettings.cfg в репозитории."/>
           </StackPanel>

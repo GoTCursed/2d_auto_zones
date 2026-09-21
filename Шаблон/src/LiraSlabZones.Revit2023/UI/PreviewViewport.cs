@@ -30,7 +30,28 @@ namespace LiraSlabZones.Revit2023.UI
         private double _modelMinX, _modelMinY, _modelMaxX, _modelMaxY;
         private double _fitScale = 1;
 
-        private readonly List<(AdditionalZone Zone, Point3[] Contour)> _drawZones = new();
+        private class CachedShape
+        {
+            public StreamGeometry Geometry = null!;
+            public double MinX;
+            public double MaxX;
+            public double MinY;
+            public double MaxY;
+
+            public bool Intersects(double minX, double maxX, double minY, double maxY) =>
+                !(MaxX < minX || MinX > maxX || MaxY < minY || MinY > maxY);
+        }
+
+        private sealed class CachedZoneShape : CachedShape
+        {
+            public AdditionalZone Zone = null!;
+            public Point3[] Contour = Array.Empty<Point3>();
+        }
+
+        private readonly List<CachedShape> _plateShapes = new();
+        private readonly List<CachedZoneShape> _drawZones = new();
+        private static readonly Dictionary<int, Brush> DiameterFillCache = new();
+        private static readonly Dictionary<int, Brush> DiameterStrokeCache = new();
         private int? _selectedZoneId;
         private ZoneEditMode _editMode;
         private AdditionalZone? _editZone;
@@ -64,8 +85,8 @@ namespace LiraSlabZones.Revit2023.UI
             _showMesh = showMesh;
             _showIso = showIso;
             _showAxes = showAxes;
-            RebuildDrawList();
             ComputeModelExtents();
+            RebuildGeometryCache();
             if (fitView) FitToView();
             InvalidateVisual();
         }
@@ -84,6 +105,7 @@ namespace LiraSlabZones.Revit2023.UI
         {
             _settings = settings ?? _settings;
             ComputeModelExtents();
+            RebuildGeometryCache();
             if (fit) FitToView();
             InvalidateVisual();
             RaiseStatus();
@@ -197,11 +219,10 @@ namespace LiraSlabZones.Revit2023.UI
                 for (int i = 0; i < _result.Plates.Count; i += step)
                 {
                     var plate = _result.Plates[i];
-                    if (!BBoxHitTx(plate, vMinX, vMaxX, vMinY, vMaxY)) continue;
+                    var shape = _plateShapes[i];
+                    if (!shape.Intersects(vMinX, vMaxX, vMinY, vMaxY)) continue;
                     if (m++ > 18000) break;
-                    var g = Geom(plate.Contour);
-                    if (g == null) continue;
-                    dc.DrawGeometry(plateFill, _showMesh ? meshPen : null, g);
+                    dc.DrawGeometry(plateFill, _showMesh ? meshPen : null, shape.Geometry);
                 }
             }
 
@@ -216,9 +237,11 @@ namespace LiraSlabZones.Revit2023.UI
                 drawn = 0;
                 bool isoLabels = _zoom >= 1.6;
                 var isoTypeface = new Typeface("Segoe UI");
-                foreach (var plate in _result.Plates)
+                for (var i = 0; i < _result.Plates.Count; i++)
                 {
-                    if (!BBoxHitTx(plate, vMinX, vMaxX, vMinY, vMaxY)) continue;
+                    var plate = _result.Plates[i];
+                    var shape = _plateShapes[i];
+                    if (!shape.Intersects(vMinX, vMaxX, vMinY, vMaxY)) continue;
                     if (drawn++ > maxDraw) break;
                     if (!plate.Rebar.Ok) continue;
 
@@ -228,8 +251,7 @@ namespace LiraSlabZones.Revit2023.UI
                     var rgb = IsoColorScale.ColorForValue(asAdd, step);
                     var brush = new SolidColorBrush(Color.FromArgb(160, rgb.R, rgb.G, rgb.B));
                     brush.Freeze();
-                    var g = Geom(plate.Contour);
-                    if (g != null) dc.DrawGeometry(brush, null, g);
+                    dc.DrawGeometry(brush, null, shape.Geometry);
 
                     if (isoLabels && drawn <= 4000)
                     {
@@ -257,13 +279,12 @@ namespace LiraSlabZones.Revit2023.UI
             dimPen.Freeze();
 
             var zoneBoxes = new List<(AdditionalZone Zone, double MinX, double MaxX, double MinY, double MaxY)>();
-            foreach (var (zone, contour) in _drawZones)
+            foreach (var shape in _drawZones)
             {
-                if (!ContourHitTx(contour, vMinX, vMaxX, vMinY, vMaxY)) continue;
+                var zone = shape.Zone;
+                if (!shape.Intersects(vMinX, vMaxX, vMinY, vMaxY)) continue;
                 if (drawn++ > maxDraw) break;
 
-                var g = Geom(contour);
-                if (g == null) continue;
                 var fill = DiameterFill(zone.DiameterMm, 70);
                 bool selected = _selectedZoneId == zone.ZoneId;
                 var zoneOutline = new Pen(
@@ -273,10 +294,10 @@ namespace LiraSlabZones.Revit2023.UI
                     DashStyle = DashStyles.Dash
                 };
                 zoneOutline.Freeze();
-                dc.DrawGeometry(fill, zoneOutline, g);
+                dc.DrawGeometry(fill, zoneOutline, shape.Geometry);
 
-                double minX = contour.Min(p => p.X), maxX = contour.Max(p => p.X);
-                double minY = contour.Min(p => p.Y), maxY = contour.Max(p => p.Y);
+                double minX = shape.MinX, maxX = shape.MaxX;
+                double minY = shape.MinY, maxY = shape.MaxY;
                 double cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5;
                 zoneBoxes.Add((zone, minX, maxX, minY, maxY));
 
@@ -629,11 +650,11 @@ namespace LiraSlabZones.Revit2023.UI
             }
             for (int i = _drawZones.Count - 1; i >= 0; i--)
             {
-                var (zone, c) = _drawZones[i];
-                if (PointInPoly(m, c))
+                var shape = _drawZones[i];
+                if (PointInPoly(m, shape.Contour))
                 {
-                    _selectedZoneId = zone.ZoneId;
-                    ZoneSelected?.Invoke(zone);
+                    _selectedZoneId = shape.Zone.ZoneId;
+                    ZoneSelected?.Invoke(shape.Zone);
                     InvalidateVisual();
                     e.Handled = true;
                     break;
@@ -685,7 +706,7 @@ namespace LiraSlabZones.Revit2023.UI
         {
             if (_result == null) return;
             for (var i = 0; i < _result.Zones.Count; i++) _result.Zones[i].ZoneId = i + 1;
-            RebuildDrawList();
+            RebuildZoneGeometryCache();
             _selectedZoneId = null;
             ZonesEdited?.Invoke();
             InvalidateVisual();
@@ -699,7 +720,18 @@ namespace LiraSlabZones.Revit2023.UI
             InvalidateVisual();
         }
 
-        private void RebuildDrawList()
+        private void RebuildGeometryCache()
+        {
+            _plateShapes.Clear();
+            if (_result != null)
+            {
+                foreach (var plate in _result.Plates)
+                    _plateShapes.Add(BuildShape(plate.Contour));
+            }
+            RebuildZoneGeometryCache();
+        }
+
+        private void RebuildZoneGeometryCache()
         {
             _drawZones.Clear();
             if (_result == null) return;
@@ -709,8 +741,47 @@ namespace LiraSlabZones.Revit2023.UI
                 if (z.Contour == null || z.Contour.Count < 3) continue;
                 var arr = new Point3[z.Contour.Count];
                 for (int i = 0; i < z.Contour.Count; i++) arr[i] = z.Contour[i];
-                _drawZones.Add((z, arr));
+                var cached = BuildShape(arr);
+                _drawZones.Add(new CachedZoneShape
+                {
+                    Zone = z,
+                    Contour = arr,
+                    Geometry = cached.Geometry,
+                    MinX = cached.MinX,
+                    MaxX = cached.MaxX,
+                    MinY = cached.MinY,
+                    MaxY = cached.MaxY
+                });
             }
+        }
+
+        private CachedShape BuildShape(IList<Point3> contour)
+        {
+            var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
+            double minX = double.MaxValue, maxX = double.MinValue;
+            double minY = double.MaxValue, maxY = double.MinValue;
+            using (var ctx = geometry.Open())
+            {
+                for (var i = 0; i < contour.Count; i++)
+                {
+                    var p = Tx(contour[i]);
+                    if (p.X < minX) minX = p.X;
+                    if (p.X > maxX) maxX = p.X;
+                    if (p.Y < minY) minY = p.Y;
+                    if (p.Y > maxY) maxY = p.Y;
+                    if (i == 0) ctx.BeginFigure(p, true, true);
+                    else ctx.LineTo(p, true, false);
+                }
+            }
+            geometry.Freeze();
+            return new CachedShape
+            {
+                Geometry = geometry,
+                MinX = minX,
+                MaxX = maxX,
+                MinY = minY,
+                MaxY = maxY
+            };
         }
 
         private void ComputeModelExtents()
@@ -795,96 +866,24 @@ namespace LiraSlabZones.Revit2023.UI
             return UnTx(t.X, t.Y);
         }
 
-        private bool ContourHitTx(Point3[] c, double minX, double maxX, double minY, double maxY)
-        {
-            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
-            foreach (var p in c)
-            {
-                var t = Tx(p);
-                if (t.X < x0) x0 = t.X; if (t.Y < y0) y0 = t.Y;
-                if (t.X > x1) x1 = t.X; if (t.Y > y1) y1 = t.Y;
-            }
-            return !(x1 < minX || x0 > maxX || y1 < minY || y0 > maxY);
-        }
-
-        private static bool BBoxHit(LiraPlateElement plate, double minX, double maxX, double minY, double maxY)
-        {
-            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
-            foreach (var p in plate.Contour)
-            {
-                if (p.X < x0) x0 = p.X; if (p.Y < y0) y0 = p.Y;
-                if (p.X > x1) x1 = p.X; if (p.Y > y1) y1 = p.Y;
-            }
-            return !(x1 < minX || x0 > maxX || y1 < minY || y0 > maxY);
-        }
-
-        private bool BBoxHitTx(LiraPlateElement plate, double minX, double maxX, double minY, double maxY)
-        {
-            // при повороте AABB исходного контура ненадёжен — проверяем трансформированные углы
-            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
-            foreach (var p in plate.Contour)
-            {
-                var t = Tx(p);
-                if (t.X < x0) x0 = t.X; if (t.Y < y0) y0 = t.Y;
-                if (t.X > x1) x1 = t.X; if (t.Y > y1) y1 = t.Y;
-            }
-            return !(x1 < minX || x0 > maxX || y1 < minY || y0 > maxY);
-        }
-
-        private static bool ContourHit(Point3[] c, double minX, double maxX, double minY, double maxY)
-        {
-            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
-            foreach (var p in c)
-            {
-                if (p.X < x0) x0 = p.X; if (p.Y < y0) y0 = p.Y;
-                if (p.X > x1) x1 = p.X; if (p.Y > y1) y1 = p.Y;
-            }
-            return !(x1 < minX || x0 > maxX || y1 < minY || y0 > maxY);
-        }
-
-        private StreamGeometry? Geom(IList<Point3> contour)
-        {
-            if (contour == null || contour.Count < 2) return null;
-            var g = new StreamGeometry { FillRule = FillRule.Nonzero };
-            using (var ctx = g.Open())
-            {
-                var p0 = Tx(contour[0]);
-                ctx.BeginFigure(p0, true, true);
-                for (int i = 1; i < contour.Count; i++)
-                    ctx.LineTo(Tx(contour[i]), true, false);
-            }
-            g.Freeze();
-            return g;
-        }
-
-        private StreamGeometry? Geom(Point3[] contour)
-        {
-            if (contour == null || contour.Length < 2) return null;
-            var g = new StreamGeometry { FillRule = FillRule.Nonzero };
-            using (var ctx = g.Open())
-            {
-                var p0 = Tx(contour[0]);
-                ctx.BeginFigure(p0, true, true);
-                for (int i = 1; i < contour.Length; i++)
-                    ctx.LineTo(Tx(contour[i]), true, false);
-            }
-            g.Freeze();
-            return g;
-        }
-
         private static Brush DiameterFill(int diameterMm, byte alpha)
         {
+            var key = (diameterMm << 8) | alpha;
+            if (DiameterFillCache.TryGetValue(key, out var cached)) return cached;
             var c = DiameterColor(diameterMm);
             var b = new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
             b.Freeze();
+            DiameterFillCache[key] = b;
             return b;
         }
 
         private static Brush DiameterStroke(int diameterMm)
         {
+            if (DiameterStrokeCache.TryGetValue(diameterMm, out var cached)) return cached;
             var c = DiameterColor(diameterMm);
             var b = new SolidColorBrush(Color.FromArgb(230, c.R, c.G, c.B));
             b.Freeze();
+            DiameterStrokeCache[diameterMm] = b;
             return b;
         }
 

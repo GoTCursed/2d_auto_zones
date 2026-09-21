@@ -5,7 +5,7 @@
 
 ## Назначение
 
-**ЛИРА-САПР 2024 → зоны доп. армирования плит → превью → Revit 2023**
+**ЛИРА-САПР 2024 → зоны доп. армирования плит → превью → Revit 2022/2023/2025/2026**
 
 Семейства зон **не подгружаются** из `.rfa`. Имена конфигурируемы:
 - дефолты: `DefaultSettings.cfg` (репозиторий)
@@ -25,7 +25,7 @@ dotnet build LiraSlabZones.sln -c Debug -p:Platform=x64
 src\LiraSlabZones.PreviewHost\bin\x64\Debug\net48\LiraSlabZones.PreviewHost.exe
 ```
 
-Add-in Revit 2023:
+Add-in Revit 2022/2023/2025/2026:
 
 ```bat
 powershell -ExecutionPolicy Bypass -File .\install-addin.ps1

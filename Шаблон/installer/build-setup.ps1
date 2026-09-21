@@ -13,22 +13,24 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $stage = Join-Path $root "dist\stage"
 Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 @(
-    "addin",
+    "addin\2022",
+    "addin\2023",
+    "addin\2025",
+    "addin\2026",
     "tools",
     "data\config",
     "data\output"
 ) | ForEach-Object { New-Item -ItemType Directory -Force -Path (Join-Path $stage $_) | Out-Null }
 
-$revitBin = Join-Path $root "src\LiraSlabZones.Revit2023\bin\x64\Release\net48"
-$coreBin  = Join-Path $root "src\LiraSlabZones.Core\bin\x64\Release\net48"
 $previewBin = Join-Path $root "src\LiraSlabZones.PreviewHost\bin\x64\Release\net48"
 
-Copy-Item (Join-Path $revitBin "LiraSlabZones.Revit2023.dll") (Join-Path $stage "addin") -Force
-foreach ($name in @("LiraSlabZones.Core.dll","Newtonsoft.Json.dll","LiraSapr.Interop.dll","LiraResAPI.Interop.dll","DefaultSettings.cfg")) {
-    $src = Join-Path $coreBin $name
-    if (-not (Test-Path -LiteralPath $src)) { $src = Join-Path $revitBin $name }
-    if (-not (Test-Path -LiteralPath $src) -and $name -eq "DefaultSettings.cfg") { $src = Join-Path $root $name }
-    if (Test-Path -LiteralPath $src) { Copy-Item $src (Join-Path $stage "addin") -Force }
+foreach ($version in @(2022, 2023, 2025, 2026)) {
+    $framework = if ($version -ge 2025) { "net8.0-windows" } else { "net48" }
+    $bin = Join-Path $root "src\LiraSlabZones.Revit$version\bin\x64\Release\$framework"
+    $target = Join-Path $stage "addin\$version"
+    Copy-Item (Join-Path $bin "*.dll") $target -Force
+    Copy-Item (Join-Path $root "interop\*.dll") $target -Force
+    Copy-Item (Join-Path $root "DefaultSettings.cfg") $target -Force
 }
 
 Copy-Item (Join-Path $previewBin "LiraSlabZones.PreviewHost.exe") (Join-Path $stage "tools") -Force
@@ -36,7 +38,6 @@ Copy-Item (Join-Path $previewBin "*.dll") (Join-Path $stage "tools") -Force
 $def = Join-Path $root "DefaultSettings.cfg"
 if (Test-Path -LiteralPath $def) {
     Copy-Item $def (Join-Path $stage "data\DefaultSettings.cfg") -Force
-    Copy-Item $def (Join-Path $stage "addin\DefaultSettings.cfg") -Force
 }
 
 $stageMb = [math]::Round(((Get-ChildItem -LiteralPath $stage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 2)

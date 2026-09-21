@@ -1,0 +1,17 @@
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.csproj.AssemblyReference.cache
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.AssemblyInfoInputs.cache
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.AssemblyInfo.cs
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.csproj.CoreCompileInputs.cache
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.sourcelink.json
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net8.0-windows\DefaultSettings.cfg
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net8.0-windows\LiraSlabZones.Core.deps.json
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net8.0-windows\LiraSlabZones.Core.dll
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net8.0-windows\LiraSlabZones.Core.pdb
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net8.0-windows\LiraResAPI.Interop.dll
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net8.0-windows\LiraSapr.Interop.dll
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlab.5CEB3127.Up2Date
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.dll
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\refint\LiraSlabZones.Core.dll
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\LiraSlabZones.Core.pdb
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net8.0-windows\ref\LiraSlabZones.Core.dll

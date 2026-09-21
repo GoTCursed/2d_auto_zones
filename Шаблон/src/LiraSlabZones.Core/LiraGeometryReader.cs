@@ -61,7 +61,7 @@ namespace LiraSlabZones.Core
             {
                 try
                 {
-                    var obj = Marshal.GetActiveObject(progId);
+                    var obj = GetActiveComObject(progId);
                     if (obj is LiraApplication app)
                         return app;
                     return (LiraApplication)obj;
@@ -74,6 +74,30 @@ namespace LiraSlabZones.Core
 
             return null;
         }
+
+        private static object GetActiveComObject(string progId)
+        {
+#if NET8_0_OR_GREATER
+            var hr = CLSIDFromProgID(progId, out var clsid);
+            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            hr = GetActiveObject(ref clsid, IntPtr.Zero, out var result);
+            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            return result;
+#else
+            return Marshal.GetActiveObject(progId);
+#endif
+        }
+
+#if NET8_0_OR_GREATER
+        [DllImport("ole32.dll", CharSet = CharSet.Unicode)]
+        private static extern int CLSIDFromProgID(string progId, out Guid clsid);
+
+        [DllImport("oleaut32.dll")]
+        private static extern int GetActiveObject(
+            ref Guid clsid,
+            IntPtr reserved,
+            [MarshalAs(UnmanagedType.IUnknown)] out object result);
+#endif
 
         public LiraModelPartEnum ModelPart { get; set; } = LiraModelPartEnum.kLiraModelPart_Visible;
 

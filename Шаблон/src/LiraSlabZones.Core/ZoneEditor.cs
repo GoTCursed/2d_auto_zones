@@ -24,6 +24,67 @@ namespace LiraSlabZones.Core
             return ApplyClipped(zone, Rectangle(minX, maxX, minY, maxY, zone.LevelZM), slab);
         }
 
+        public static void SetDiameter(AdditionalZone zone, int diameterMm)
+        {
+            if (diameterMm <= 0) throw new ArgumentOutOfRangeException(nameof(diameterMm));
+            zone.DiameterMm = diameterMm;
+            zone.AsCoveredCm2PerM = BarCapacity.AsCm2PerM(diameterMm, Math.Max(1, zone.BarStepMm));
+            zone.Comment = "диаметр изменён в предпросмотре";
+        }
+
+        public static void SetDirectionPerpendicularToEdge(AdditionalZone zone, bool verticalEdge)
+        {
+            zone.Direction = verticalEdge ? ZoneDirection.X : ZoneDirection.Y;
+            zone.Comment = "направление задано перпендикулярно грани";
+            SetContour(zone, zone.Contour.ToList());
+        }
+
+        public static bool CreateGap(AdditionalZone moving, AdditionalZone reference, IList<Point3> slab)
+        {
+            if (ReferenceEquals(moving, reference)) return false;
+            var gap = Math.Min(moving.BarStepMm, reference.BarStepMm) / 1000.0;
+            var a = Bounds(moving.Contour);
+            var b = Bounds(reference.Contour);
+
+            var candidates = new[]
+            {
+                (Dx: b.MinX - gap - a.MaxX, Dy: 0.0),
+                (Dx: b.MaxX + gap - a.MinX, Dy: 0.0),
+                (Dx: 0.0, Dy: b.MinY - gap - a.MaxY),
+                (Dx: 0.0, Dy: b.MaxY + gap - a.MinY)
+            }.OrderBy(v => Math.Abs(v.Dx) + Math.Abs(v.Dy));
+
+            foreach (var candidate in candidates)
+            {
+                var copy = Copy(moving);
+                var shifted = moving.Contour
+                    .Select(p => new Point3(p.X + candidate.Dx, p.Y + candidate.Dy, p.Z))
+                    .ToList();
+                if (!ApplyClipped(copy, shifted, slab)) continue;
+                if (!HasRequiredGap(copy.Contour, reference.Contour, gap)) continue;
+                SetContour(moving, copy.Contour.ToList());
+                moving.Comment = $"зазор {gap * 1000:0} мм создан в предпросмотре";
+                return true;
+            }
+            return false;
+        }
+
+        private static bool HasRequiredGap(IList<Point3> first, IList<Point3> second, double required)
+        {
+            var a = Bounds(first);
+            var b = Bounds(second);
+            var overlapX = Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX);
+            var overlapY = Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+            var gapX = Math.Max(0, Math.Max(a.MinX, b.MinX) - Math.Min(a.MaxX, b.MaxX));
+            var gapY = Math.Max(0, Math.Max(a.MinY, b.MinY) - Math.Min(a.MaxY, b.MaxY));
+            return (overlapY > 1e-6 && gapX + 1e-6 >= required) ||
+                   (overlapX > 1e-6 && gapY + 1e-6 >= required);
+        }
+
+        private static (double MinX, double MaxX, double MinY, double MaxY) Bounds(IList<Point3> contour) =>
+            (contour.Min(p => p.X), contour.Max(p => p.X),
+             contour.Min(p => p.Y), contour.Max(p => p.Y));
+
         public static AdditionalZone? Create(
             AdditionalZone template, double minX, double maxX, double minY, double maxY,
             IList<Point3> slab)

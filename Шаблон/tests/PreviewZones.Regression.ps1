@@ -96,6 +96,24 @@ Assert ($parts.Count -eq 2) 'Clipper split did not produce two zones.'
 $joined = [LiraSlabZones.Core.ZoneEditor]::Merge($parts[0], $parts[1], $editOutline)
 Assert ($null -ne $joined -and $joined.Contour.Count -ge 4) 'Clipper merge failed.'
 Write-Host 'PASS Clipper2 zone create, move, resize, split and merge'
+$manual = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 1, 7, 2, 5, $editOutline)
+[LiraSlabZones.Core.ZoneEditor]::SetDiameter($manual, 20)
+Assert ($manual.DiameterMm -eq 20 -and $manual.AsCoveredCm2PerM -gt 0) 'Manual diameter was not applied.'
+[LiraSlabZones.Core.ZoneEditor]::SetDirectionPerpendicularToEdge($manual, $false)
+Assert ($manual.Direction -eq [LiraSlabZones.Core.ZoneDirection]::Y) 'Horizontal edge must produce perpendicular Y direction.'
+Assert ([Math]::Abs($manual.LengthM - 3) -lt 0.001 -and [Math]::Abs($manual.WidthM - 6) -lt 0.001) 'Direction dimensions were not recalculated.'
+Write-Host 'PASS manual zone diameter and perpendicular edge direction'
+$gapMoving = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 4, 6, 2, 4, $editOutline)
+$gapFixed = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 6, 8, 2, 4, $editOutline)
+$gapMoving.BarStepMm = 100
+$gapFixed.BarStepMm = 200
+$fixedMinBefore = ($gapFixed.Contour.X | Measure-Object -Minimum).Minimum
+Assert ([LiraSlabZones.Core.ZoneEditor]::CreateGap($gapMoving, $gapFixed, $editOutline)) 'Manual gap creation failed.'
+$movingMax = ($gapMoving.Contour.X | Measure-Object -Maximum).Maximum
+$fixedMin = ($gapFixed.Contour.X | Measure-Object -Minimum).Minimum
+Assert ([Math]::Abs(($fixedMin - $movingMax) - 0.1) -lt 0.001) 'Manual gap is not equal to the smaller 100 mm spacing.'
+Assert ([Math]::Abs($fixedMin - $fixedMinBefore) -lt 0.000001) 'Reference zone moved while creating a gap.'
+Write-Host 'PASS two-click gap uses the smaller zone spacing'
 Assert ([LiraSlabZones.Core.RebarTables]::PickFamilyLength(3460) -eq 3900) '3460 mm was not rounded up to the 3900 mm family length.'
 Write-Host 'PASS family length rounds 3460 mm up to 3900 mm'
 Assert ([LiraSlabZones.Core.RebarTables]::BentBarTotalLengthMm(3460, 150, [LiraSlabZones.Core.ZoneFamilyKind]::L) -eq 3610) 'SUM-31 total length is wrong.'

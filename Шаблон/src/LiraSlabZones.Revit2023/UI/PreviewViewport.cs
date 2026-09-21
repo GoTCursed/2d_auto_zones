@@ -8,7 +8,7 @@ using LiraSlabZones.Core;
 
 namespace LiraSlabZones.Revit2023.UI
 {
-    public enum ZoneEditMode { Select, Move, Resize, Create, Split, Merge, Delete }
+    public enum ZoneEditMode { Select, Move, Resize, Create, Split, Merge, Delete, PerpendicularToEdge, CreateGap }
 
     /// <summary>
     /// Векторный превью-холст: зум без размытия, зоны и контур по сетке КЭ.
@@ -56,6 +56,7 @@ namespace LiraSlabZones.Revit2023.UI
         private ZoneEditMode _editMode;
         private AdditionalZone? _editZone;
         private AdditionalZone? _mergeZone;
+        private AdditionalZone? _gapMovingZone;
         private Point3? _editStart;
         public event Action<AdditionalZone>? ZoneSelected;
         public event Action? ZonesEdited;
@@ -67,12 +68,31 @@ namespace LiraSlabZones.Revit2023.UI
 
         public double Zoom => _zoom;
 
+        public bool SetSelectedDiameter(int diameterMm)
+        {
+            if (_result == null || !_selectedZoneId.HasValue) return false;
+            var zone = _result.Zones.FirstOrDefault(z => z.ZoneId == _selectedZoneId.Value);
+            if (zone == null) return false;
+            var background = zone.Layer == RebarLayer.As1 || zone.Layer == RebarLayer.As2
+                ? _settings.BgBottomDiameterMm
+                : _settings.BgTopDiameterMm;
+            if (diameterMm < background)
+            {
+                RaiseStatus($"Ø{diameterMm} меньше фонового Ø{background}");
+                return false;
+            }
+            ZoneEditor.SetDiameter(zone, diameterMm);
+            CommitEdits(zone);
+            return true;
+        }
+
         public void SetEditMode(ZoneEditMode mode)
         {
             _editMode = mode;
             _editZone = null;
             _editStart = null;
             if (mode != ZoneEditMode.Merge) _mergeZone = null;
+            if (mode != ZoneEditMode.CreateGap) _gapMovingZone = null;
             Cursor = mode == ZoneEditMode.Move ? Cursors.SizeAll :
                 mode == ZoneEditMode.Delete ? Cursors.No : Cursors.Cross;
             RaiseStatus($"Редактирование зон: {mode}");
@@ -638,6 +658,37 @@ namespace LiraSlabZones.Revit2023.UI
                         else RaiseStatus("Объединять можно зоны одного слоя и направления");
                     }
                 }
+                else if (_editMode == ZoneEditMode.PerpendicularToEdge && hit != null)
+                {
+                    var minX = hit.Contour.Min(p => p.X);
+                    var maxX = hit.Contour.Max(p => p.X);
+                    var minY = hit.Contour.Min(p => p.Y);
+                    var maxY = hit.Contour.Max(p => p.Y);
+                    var distanceToVertical = Math.Min(Math.Abs(m.X - minX), Math.Abs(m.X - maxX));
+                    var distanceToHorizontal = Math.Min(Math.Abs(m.Y - minY), Math.Abs(m.Y - maxY));
+                    ZoneEditor.SetDirectionPerpendicularToEdge(hit, distanceToVertical <= distanceToHorizontal);
+                    CommitEdits(hit);
+                }
+                else if (_editMode == ZoneEditMode.CreateGap && hit != null)
+                {
+                    if (_gapMovingZone == null)
+                    {
+                        _gapMovingZone = hit;
+                        _selectedZoneId = hit.ZoneId;
+                        ZoneSelected?.Invoke(hit);
+                        RaiseStatus("Зазор: выберите зону, от которой нужно отодвинуть");
+                        InvalidateVisual();
+                    }
+                    else if (!ReferenceEquals(_gapMovingZone, hit))
+                    {
+                        var moving = _gapMovingZone;
+                        _gapMovingZone = null;
+                        if (ZoneEditor.CreateGap(moving, hit, _result.Outline))
+                            CommitEdits(moving);
+                        else
+                            RaiseStatus("Не удалось создать зазор внутри контура плиты");
+                    }
+                }
                 else if (_editMode == ZoneEditMode.Create || hit != null)
                 {
                     _editZone = hit;
@@ -702,12 +753,13 @@ namespace LiraSlabZones.Revit2023.UI
             return null;
         }
 
-        private void CommitEdits()
+        private void CommitEdits(AdditionalZone? keepSelected = null)
         {
             if (_result == null) return;
             for (var i = 0; i < _result.Zones.Count; i++) _result.Zones[i].ZoneId = i + 1;
             RebuildZoneGeometryCache();
-            _selectedZoneId = null;
+            _selectedZoneId = keepSelected?.ZoneId;
+            if (keepSelected != null) ZoneSelected?.Invoke(keepSelected);
             ZonesEdited?.Invoke();
             InvalidateVisual();
         }

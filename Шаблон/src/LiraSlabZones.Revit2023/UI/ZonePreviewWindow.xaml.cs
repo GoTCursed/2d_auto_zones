@@ -35,6 +35,7 @@ namespace LiraSlabZones.Revit2023.UI
             {
                 Viewport.ZoneSelected += z =>
                 {
+                    SelectComboValue(CmbSelectedZoneDiameter, z.DiameterMm);
                     var bars = z.DiameterMm > 0
                         ? $"Ø{z.DiameterMm}/{z.BarStepMm}×{z.BarCount}\n{z.FamilyKind} {z.Direction}\n"
                         : "";
@@ -73,6 +74,29 @@ namespace LiraSlabZones.Revit2023.UI
         private void BtnEditSplit_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Split);
         private void BtnEditMerge_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Merge);
         private void BtnEditDelete_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Delete);
+        private void BtnEditGap_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.CreateGap);
+        private void BtnEditPerpendicular_Click(object sender, RoutedEventArgs e) =>
+            SetZoneEditMode(ZoneEditMode.PerpendicularToEdge);
+
+        private void BtnApplyZoneDiameter_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(CmbSelectedZoneDiameter.SelectedItem is ComboBoxItem item) ||
+                !int.TryParse(item.Content?.ToString(), out var diameter)) return;
+            if (!Viewport.SetSelectedDiameter(diameter))
+                TxtStatus.Text = "Сначала выберите зону; диаметр не может быть меньше фонового";
+        }
+
+        private static void SelectComboValue(ComboBox combo, int value)
+        {
+            foreach (var entry in combo.Items)
+            {
+                if (entry is ComboBoxItem item && item.Content?.ToString() == value.ToString(CultureInfo.InvariantCulture))
+                {
+                    combo.SelectedItem = item;
+                    return;
+                }
+            }
+        }
 
         public void SetPlaceCallback(Action<AnalysisResult> callback)
         {

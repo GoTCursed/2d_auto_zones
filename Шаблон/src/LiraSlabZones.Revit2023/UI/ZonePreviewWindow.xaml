@@ -276,6 +276,7 @@
             <Button Content="+▭" Width="34" Margin="0,0,3,0" Click="BtnEditCreate_Click" ToolTip="Создать зону рамкой; свойства берутся с выбранной зоны"/>
             <Button Content="┆" Width="28" Margin="0,0,3,0" Click="BtnEditSplit_Click" ToolTip="Разделить зону в точке клика"/>
             <Button Content="∪" Width="28" Margin="0,0,3,0" Click="BtnEditMerge_Click" ToolTip="Объединить две последовательно выбранные зоны"/>
+            <Button Content="↔|" Width="34" Margin="0,0,3,0" Click="BtnEditGap_Click" ToolTip="Создать зазор: первая зона перемещается от второй на меньший шаг"/>
             <Button Content="×" Width="28" Margin="0,0,10,0" Click="BtnEditDelete_Click" ToolTip="Удалить зону"/>
             <Button Content="−" Width="28" Margin="0,0,4,0" Click="BtnZoomOut_Click" ToolTip="Отдалить"/>
             <Button Content="+" Width="28" Margin="0,0,4,0" Click="BtnZoomIn_Click" ToolTip="Приблизить"/>
@@ -320,6 +321,20 @@
       <GroupBox Header="Выбранная зона" >
         <StackPanel>
           <TextBlock x:Name="TxtZoneInfo" TextWrapping="Wrap" FontSize="12" Text="Кликните зону на холсте"/>
+          <Separator Margin="0,8,0,8"/>
+          <TextBlock Text="Диаметр, мм" FontSize="11" Foreground="#6B7280"/>
+          <DockPanel Margin="0,3,0,6">
+            <Button DockPanel.Dock="Right" Content="Применить Ø" Margin="6,0,0,0"
+                    Click="BtnApplyZoneDiameter_Click" ToolTip="Изменить диаметр выбранной зоны"/>
+            <ComboBox x:Name="CmbSelectedZoneDiameter" MinWidth="80" SelectedIndex="2">
+              <ComboBoxItem Content="8"/><ComboBoxItem Content="10"/><ComboBoxItem Content="12"/>
+              <ComboBoxItem Content="16"/><ComboBoxItem Content="20"/><ComboBoxItem Content="22"/>
+              <ComboBoxItem Content="25"/><ComboBoxItem Content="28"/><ComboBoxItem Content="32"/>
+              <ComboBoxItem Content="36"/>
+            </ComboBox>
+          </DockPanel>
+          <Button Content="⊥ Выбрать грань" Click="BtnEditPerpendicular_Click"
+                  ToolTip="Кликните нужную грань зоны; продольное направление будет задано перпендикулярно ей"/>
         </StackPanel>
       </GroupBox>
     </DockPanel>

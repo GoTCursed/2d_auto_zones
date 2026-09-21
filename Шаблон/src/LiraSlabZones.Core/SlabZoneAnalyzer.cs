@@ -191,7 +191,7 @@ namespace LiraSlabZones.Core
                         (settings.MaxZoneWidthM > 0 && plate.WidthM > settings.MaxZoneWidthM) ||
                         (settings.MinZoneLengthM > 0 && plate.LengthM < settings.MinZoneLengthM);
 
-                    var dir = RebarTables.DirectionForLayer(layer);
+                    var dir = RebarTables.DirectionForLayer(layer, settings.ReverseZoneDirections);
                     var backgroundDiameter = layer is RebarLayer.As1 or RebarLayer.As2
                         ? settings.BgBottomDiameterMm
                         : settings.BgTopDiameterMm;

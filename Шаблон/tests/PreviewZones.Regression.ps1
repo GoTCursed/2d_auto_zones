@@ -5,6 +5,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'src\LiraSlabZones.PreviewHost\bin\x64\Debug\net48'
 Add-Type -AssemblyName PresentationCore, PresentationFramework, WindowsBase
 Add-Type -Path (Join-Path $build 'Newtonsoft.Json.dll')
+Add-Type -Path (Join-Path $build 'Clipper2Lib.dll')
 Add-Type -Path (Join-Path $build 'LiraSlabZones.Core.dll')
 [void][Reflection.Assembly]::LoadFrom((Join-Path $build 'LiraSlabZones.PreviewHost.exe'))
 
@@ -45,7 +46,7 @@ function Assert-ZoneRules($zones, [int]$backgroundDiameter) {
                 } else {
                     $overlapY * 1000
                 }
-                Assert ($allowedMm -gt 0 -and ($longOverlapMm + 1) -ge $allowedMm) "Zones $($zones[$i].ZoneId) and $($zones[$j].ZoneId) have insufficient lap overlap: $([Math]::Round($longOverlapMm))/$allowedMm mm, lengths $($zones[$i].LengthMm)/$($zones[$j].LengthMm)."
+                Assert ($allowedMm -gt 0 -and ($longOverlapMm + 1) -ge $allowedMm) "Zones $($zones[$i].ZoneId) and $($zones[$j].ZoneId) have insufficient lap overlap: $([Math]::Round($longOverlapMm))/$allowedMm mm, lengths $($zones[$i].LengthMm)/$($zones[$j].LengthMm), placements $($zones[$i].Placement.X),$($zones[$i].Placement.Y) / $($zones[$j].Placement.X),$($zones[$j].Placement.Y), FE $($zones[$i].NodeIds -join ',') / $($zones[$j].NodeIds -join ',')."
                 continue
             }
             $gapX = if ($overlapX -lt 0) { -1.0 * $overlapX } else { 0.0 }
@@ -68,6 +69,33 @@ Assert ($step200.Item1 -ge 12 -and $step200.Item2 -eq 200) 'Single-spacing mode 
 Assert ($mixed.Item1 -ge 12 -and $mixed.Item2 -eq 100) 'Mixed-spacing mode did not select the economical 100 mm option.'
 Assert ($mixed200.Item1 -ge 12 -and $mixed200.Item2 -eq 200) 'Mixed-spacing mode did not retain the economical 200 mm option.'
 Write-Host 'PASS diameter floor and mixed 100/200 spacing selection'
+$xDirection = [LiraSlabZones.Core.ZoneDirection]::X
+$yDirection = [LiraSlabZones.Core.ZoneDirection]::Y
+Assert ([LiraSlabZones.Core.RebarTables]::DirectionForLayer([LiraSlabZones.Core.RebarLayer]::As1, $false) -eq $xDirection) 'Normal As1 direction must be X.'
+Assert ([LiraSlabZones.Core.RebarTables]::DirectionForLayer([LiraSlabZones.Core.RebarLayer]::As2, $false) -eq $yDirection) 'Normal As2 direction must be Y.'
+Assert ([LiraSlabZones.Core.RebarTables]::DirectionForLayer([LiraSlabZones.Core.RebarLayer]::As3, $true) -eq $yDirection) 'Reversed As3 direction must be Y.'
+Assert ([LiraSlabZones.Core.RebarTables]::DirectionForLayer([LiraSlabZones.Core.RebarLayer]::As4, $true) -eq $xDirection) 'Reversed As4 direction must be X.'
+Write-Host 'PASS normal and reversed layer directions'
+
+$editOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$editOutline.Add([LiraSlabZones.Core.Point3]::new(0, 0, 0))
+$editOutline.Add([LiraSlabZones.Core.Point3]::new(10, 0, 0))
+$editOutline.Add([LiraSlabZones.Core.Point3]::new(10, 10, 0))
+$editOutline.Add([LiraSlabZones.Core.Point3]::new(0, 10, 0))
+$editTemplate = [LiraSlabZones.Core.AdditionalZone]::new()
+$editTemplate.Layer = [LiraSlabZones.Core.RebarLayer]::As1
+$editTemplate.Direction = [LiraSlabZones.Core.ZoneDirection]::X
+$editTemplate.DiameterMm = 16
+$editTemplate.BarStepMm = 200
+$edited = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, -1, 4, 2, 5, $editOutline)
+Assert ($null -ne $edited -and (($edited.Contour.X | Measure-Object -Minimum).Minimum -ge -0.000001)) 'Clipper create did not trim the zone to the slab.'
+Assert ([LiraSlabZones.Core.ZoneEditor]::Move($edited, 2, 1, $editOutline)) 'Clipper move failed.'
+Assert ([LiraSlabZones.Core.ZoneEditor]::Resize($edited, 1, 7, 1, 7, $editOutline)) 'Clipper resize failed.'
+$parts = [LiraSlabZones.Core.ZoneEditor]::Split($edited, 4, $true, $editOutline)
+Assert ($parts.Count -eq 2) 'Clipper split did not produce two zones.'
+$joined = [LiraSlabZones.Core.ZoneEditor]::Merge($parts[0], $parts[1], $editOutline)
+Assert ($null -ne $joined -and $joined.Contour.Count -ge 4) 'Clipper merge failed.'
+Write-Host 'PASS Clipper2 zone create, move, resize, split and merge'
 Assert ([LiraSlabZones.Core.RebarTables]::PickFamilyLength(3460) -eq 3900) '3460 mm was not rounded up to the 3900 mm family length.'
 Write-Host 'PASS family length rounds 3460 mm up to 3900 mm'
 Assert ([LiraSlabZones.Core.RebarTables]::BentBarTotalLengthMm(3460, 150, [LiraSlabZones.Core.ZoneFamilyKind]::L) -eq 3610) 'SUM-31 total length is wrong.'
@@ -109,6 +137,16 @@ function Test-PointCoverage($point, $zones) {
         }
     }
     return $false
+}
+
+function Assert-ZonesInsideOutline($zones, $outline) {
+    foreach ($zone in $zones) {
+        foreach ($point in $zone.Contour) {
+            $x = $point.X + ($zone.Placement.X - $point.X) * 0.001
+            $y = $point.Y + ($zone.Placement.Y - $point.Y) * 0.001
+            Assert ([LiraSlabZones.Core.MeshBoundary]::PointInPolygon($x, $y, $outline)) "Zone $($zone.ZoneId) extends outside the slab outline."
+        }
+    }
 }
 
 function New-PolygonPlate([int]$id, [double[][]]$xy, [double]$as3) {
@@ -222,6 +260,19 @@ foreach ($id in $activeIds) {
 }
 Write-Host "PASS L-shape approximation: 3 FE -> 1 rectangle, $($approxZone.WidthMm)x$($approxZone.LengthMm) mm"
 
+$approxSettings.ReverseZoneDirections = $true
+$reversedApprox = [LiraSlabZones.Core.SlabZoneAnalyzer]::BuildResult(
+    'APPROX_L_SHAPE_REVERSED', '(synthetic)', 49, $approxPlates, $approxSettings,
+    $null, 3.0, 'Z = 3.000 m', $true, $null)
+Assert ($reversedApprox.Zones.Count -eq 1) 'Reversed L-shaped spot changed the zone count.'
+Assert ($reversedApprox.Zones[0].Direction -eq $yDirection) 'Reversed As3 zone was not laid along Y.'
+foreach ($id in $activeIds) {
+    $plate = $approxPlates | Where-Object { $_.Id -eq $id }
+    Assert (Test-ZoneCoverage $plate @($reversedApprox.Zones[0])) "Reversed zone does not cover FE $id."
+}
+$approxSettings.ReverseZoneDirections = $false
+Write-Host 'PASS reversed As3 layout uses Y and retains FE coverage'
+
 $testOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
 $testOutline.Add([LiraSlabZones.Core.Point3]::new(0, 0, 3))
 $testOutline.Add([LiraSlabZones.Core.Point3]::new(4, 0, 3))
@@ -313,7 +364,10 @@ if ($InputJson) {
     $loaded.Settings.MinZoneWidthM = 0.8
     $wide = [LiraSlabZones.Core.SlabZoneAnalyzer]::RebuildForElevation($loaded, 55.7, $loaded.Settings)
     Assert ($wide.Zones.Count -gt 0) 'Minimum width removed all zones.'
-    Assert (($wide.Zones | Where-Object { $_.WidthMm -lt 799 }).Count -eq 0) 'A zone is narrower than the requested minimum.'
+    $narrowInterior = @($wide.Zones | Where-Object {
+        $_.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::Straight -and $_.WidthMm -lt 799
+    })
+    Assert ($narrowInterior.Count -eq 0) "Interior straight zone $($narrowInterior[0].ZoneId) is narrower than the requested minimum: $($narrowInterior[0].WidthMm) mm."
     Assert (($wide.Zones | ForEach-Object { $_.NodeIds.Count } | Measure-Object -Maximum).Maximum -gt 1) 'Connected cells were not merged.'
     $loaded = $wide
     Write-Host "PASS provided JSON: $($loaded.Plates.Count) plates, $($loaded.Zones.Count) merged zones with min width 800 mm"
@@ -333,7 +387,9 @@ if ($InputJson) {
     })
     $uncovered = @($active | Where-Object { -not (Test-ZoneCoverage $_ $loaded.Zones) })
     Assert ($loaded.Zones.Count -gt 1) 'Z=63.200 As3 collapsed to one zone.'
-    Assert (($loaded.Zones | Where-Object { $_.WidthMm -lt 1199 }).Count -eq 0) 'Z=63.200 has a zone narrower than 1200 mm.'
+    Assert (($loaded.Zones | Where-Object {
+        $_.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::Straight -and $_.WidthMm -lt 1199
+    }).Count -eq 0) 'Z=63.200 has an interior straight zone narrower than 1200 mm.'
     if ($uncovered.Count -gt 0) {
         Write-Host ('Uncovered FE: ' + (($uncovered | ForEach-Object {
             $plate = $_
@@ -364,7 +420,13 @@ if ($InputJson) {
     $uncovered = @($active | Where-Object { -not (Test-ZoneCoverage $_ $loaded.Zones) })
     Assert ($active.Count -eq 68) 'Z=66.950 As4 active FE count changed.'
     Assert ($loaded.Zones.Count -gt 0) 'Z=66.950 As4 produced zero zones.'
+    if ($uncovered.Count -gt 0) {
+        Write-Host ('Z=66.950 uncovered: ' + (($uncovered | ForEach-Object {
+            "$($_.Id) ($($_.Centroid.X.ToString('0.000')),$($_.Centroid.Y.ToString('0.000')))"
+        }) -join ', '))
+    }
     Assert ($uncovered.Count -eq 0) 'Z=66.950 has positive As4 values outside all non-overlapping zones.'
+    Assert-ZonesInsideOutline $loaded.Zones $loaded.Outline
     Assert-ZoneRules $loaded.Zones 12
     Write-Host "PASS Z=66.950 As4 Max: $($loaded.Zones.Count) non-overlapping zones for $($active.Count) positive FE"
 
@@ -411,8 +473,15 @@ if ($InputJson) {
         Write-Host "Z=29.450 uncovered IDs referenced by zones: $($uncoveredKnown.Count)/$($uncovered.Count); zones: $($layerZones.Count)"
     }
     Assert ($uncovered.Count -eq 0) "Z=29.450 As2 has $($uncovered.Count) colored FE without zones."
+    $bentEdgeAs2 = @($layerZones | Where-Object {
+        $_.FamilyKind -ne [LiraSlabZones.Core.ZoneFamilyKind]::Straight -and
+        $_.CountBars -and -not $_.CountInSpec
+    })
+    Assert ($bentEdgeAs2.Count -gt 0) 'As2 has no SUM-31...SUM-34 zones at the slab edge.'
+    Assert-ZonesInsideOutline $layerZones $loaded.Outline
     Assert-ZoneRules $layerZones 12
-    Write-Host "PASS Z=29.450 As2 Max: $($layerZones.Count) zones cover all $($active.Count) colored FE"
+    Write-Host "PASS Z=29.450 As2 Max: $($layerZones.Count) zones cover all $($active.Count) colored FE; $($bentEdgeAs2.Count) bent edge zones"
+
 }
 
 function Render-Preview($result) {
@@ -442,7 +511,7 @@ for ($i = 0; $i -lt $a.Length; $i += 4) {
     if ($a[$i] -ne $b[$i] -or $a[$i+1] -ne $b[$i+1] -or $a[$i+2] -ne $b[$i+2]) { $changed++ }
 }
 Assert ($changed -gt 100) 'Zones produce no visible pixels in the WPF viewport.'
-$imagePath = Join-Path $build 'preview-regression.png'
+$imagePath = Join-Path ([IO.Path]::GetTempPath()) 'LiraSlabZones-preview-regression.png'
 $encoder = [Windows.Media.Imaging.PngBitmapEncoder]::new()
 $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($withZones))
 $stream = [IO.File]::Create($imagePath)

@@ -97,8 +97,10 @@ namespace LiraSlabZones.Core
         /// </summary>
         public static int AllowedZoneOverlapMm(AdditionalZone first, AdditionalZone second)
         {
-            if (Math.Abs(first.LengthMm - 11700) > 1 &&
-                Math.Abs(second.LengthMm - 11700) > 1)
+            bool HasPlanLength11700(AdditionalZone zone) =>
+                Math.Abs(zone.LengthMm - 11700) <= 1 ||
+                Math.Abs(UnitConversion.MetersToMm(zone.LengthM) - 11700) <= 1;
+            if (!HasPlanLength11700(first) && !HasPlanLength11700(second))
                 return 0;
             var governing = first.DiameterMm >= second.DiameterMm ? first : second;
             return 2 * LapLenMm(governing.ConcreteClass, governing.DiameterMm);
@@ -152,8 +154,14 @@ namespace LiraSlabZones.Core
             _ => StraightFamily
         };
 
-        public static ZoneDirection DirectionForLayer(RebarLayer layer) =>
-            layer is RebarLayer.As1 or RebarLayer.As3 ? ZoneDirection.X : ZoneDirection.Y;
+        public static ZoneDirection DirectionForLayer(RebarLayer layer, bool reverse = false)
+        {
+            var normal = layer is RebarLayer.As1 or RebarLayer.As3
+                ? ZoneDirection.X
+                : ZoneDirection.Y;
+            if (!reverse) return normal;
+            return normal == ZoneDirection.X ? ZoneDirection.Y : ZoneDirection.X;
+        }
 
         public static int RowForLayer(RebarLayer layer) => (int)layer;
     }

@@ -8,6 +8,8 @@ using LiraSlabZones.Core;
 
 namespace LiraSlabZones.Revit2023.UI
 {
+    public enum ZoneEditMode { Select, Move, Resize, Create, Split, Merge, Delete }
+
     /// <summary>
     /// Векторный превью-холст: зум без размытия, зоны и контур по сетке КЭ.
     /// </summary>
@@ -30,7 +32,12 @@ namespace LiraSlabZones.Revit2023.UI
 
         private readonly List<(AdditionalZone Zone, Point3[] Contour)> _drawZones = new();
         private int? _selectedZoneId;
+        private ZoneEditMode _editMode;
+        private AdditionalZone? _editZone;
+        private AdditionalZone? _mergeZone;
+        private Point3? _editStart;
         public event Action<AdditionalZone>? ZoneSelected;
+        public event Action? ZonesEdited;
         public event Action<string>? StatusChanged;
 
         private static readonly Brush Bg = Brushes.White;
@@ -38,6 +45,17 @@ namespace LiraSlabZones.Revit2023.UI
         private static readonly Pen MeshPen = FreezePen(Color.FromArgb(80, 55, 65, 81), 0.4);
 
         public double Zoom => _zoom;
+
+        public void SetEditMode(ZoneEditMode mode)
+        {
+            _editMode = mode;
+            _editZone = null;
+            _editStart = null;
+            if (mode != ZoneEditMode.Merge) _mergeZone = null;
+            Cursor = mode == ZoneEditMode.Move ? Cursors.SizeAll :
+                mode == ZoneEditMode.Delete ? Cursors.No : Cursors.Cross;
+            RaiseStatus($"Редактирование зон: {mode}");
+        }
 
         public void SetData(AnalysisResult? result, AnalysisSettings settings, bool showMesh, bool showIso, bool showAxes = false, bool fitView = true)
         {
@@ -313,6 +331,61 @@ namespace LiraSlabZones.Revit2023.UI
 
             // подпись отметки в экранных координатах (не масштабируется с моделью)
             DrawElevationBadge(dc);
+            DrawDiameterLegend(dc);
+        }
+
+        private void DrawDiameterLegend(DrawingContext dc)
+        {
+            var diameters = _drawZones
+                .Where(item => item.Zone.DiameterMm > 0)
+                .Select(item => item.Zone.DiameterMm)
+                .Distinct()
+                .OrderBy(d => d)
+                .ToList();
+            if (diameters.Count == 0) return;
+
+            var typeface = new Typeface("Segoe UI");
+            const double fontSize = 12;
+            const double rowHeight = 22;
+            const double width = 132;
+            var height = 34 + diameters.Count * rowHeight;
+            var x = Math.Max(8, ActualWidth - width - 12);
+            const double y = 12;
+            var panel = new Rect(x, y, width, height);
+            var panelFill = new SolidColorBrush(Color.FromArgb(235, 255, 255, 255));
+            panelFill.Freeze();
+            var panelPen = new Pen(new SolidColorBrush(Color.FromRgb(203, 213, 225)), 1);
+            panelPen.Freeze();
+            dc.DrawRoundedRectangle(panelFill, panelPen, panel, 4, 4);
+
+            var title = new FormattedText(
+                "Диаметр зон",
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight,
+                typeface,
+                fontSize,
+                Brushes.Black,
+                1.0);
+            dc.DrawText(title, new Point(x + 10, y + 8));
+
+            for (var i = 0; i < diameters.Count; i++)
+            {
+                var diameter = diameters[i];
+                var rowY = y + 32 + i * rowHeight;
+                dc.DrawRectangle(
+                    DiameterFill(diameter, 170),
+                    new Pen(DiameterStroke(diameter), 1),
+                    new Rect(x + 10, rowY + 3, 16, 16));
+                var label = new FormattedText(
+                    $"Ø{diameter} мм",
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight,
+                    typeface,
+                    fontSize,
+                    Brushes.Black,
+                    1.0);
+                dc.DrawText(label, new Point(x + 34, rowY + 2));
+            }
         }
 
         private void DrawAxes(DrawingContext dc, double s, double penW)
@@ -491,7 +564,8 @@ namespace LiraSlabZones.Revit2023.UI
             else
             {
                 var m = ScreenToModel(e.GetPosition(this));
-                RaiseStatus($"X={m.X:F2} Y={m.Y:F2} м | зум {_zoom * 100:0}% | колесо зум, ПКМ пан");
+                var edit = _editStart != null ? $" | {_editMode}: отпустите ЛКМ" : "";
+                RaiseStatus($"X={m.X:F2} Y={m.Y:F2} м | зум {_zoom * 100:0}%{edit} | колесо зум, ПКМ пан");
             }
             base.OnMouseMove(e);
         }
@@ -499,6 +573,60 @@ namespace LiraSlabZones.Revit2023.UI
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
         {
             var m = ScreenToModel(e.GetPosition(this));
+            var hit = HitZone(m);
+            if (_result != null && _editMode != ZoneEditMode.Select)
+            {
+                if (_editMode == ZoneEditMode.Delete && hit != null)
+                {
+                    _result.Zones.Remove(hit);
+                    CommitEdits();
+                }
+                else if (_editMode == ZoneEditMode.Split && hit != null)
+                {
+                    var pieces = ZoneEditor.Split(hit,
+                        hit.Direction == ZoneDirection.X ? m.X : m.Y,
+                        hit.Direction == ZoneDirection.X, _result.Outline);
+                    if (pieces.Count == 2)
+                    {
+                        _result.Zones.Remove(hit);
+                        _result.Zones.AddRange(pieces);
+                        CommitEdits();
+                    }
+                }
+                else if (_editMode == ZoneEditMode.Merge && hit != null)
+                {
+                    if (_mergeZone == null)
+                    {
+                        _mergeZone = hit;
+                        _selectedZoneId = hit.ZoneId;
+                        ZoneSelected?.Invoke(hit);
+                        RaiseStatus("Объединение: выберите вторую зону того же слоя");
+                        InvalidateVisual();
+                    }
+                    else if (!ReferenceEquals(_mergeZone, hit))
+                    {
+                        var merged = ZoneEditor.Merge(_mergeZone, hit, _result.Outline);
+                        if (merged != null)
+                        {
+                            _result.Zones.Remove(_mergeZone);
+                            _result.Zones.Remove(hit);
+                            _result.Zones.Add(merged);
+                            _mergeZone = null;
+                            CommitEdits();
+                        }
+                        else RaiseStatus("Объединять можно зоны одного слоя и направления");
+                    }
+                }
+                else if (_editMode == ZoneEditMode.Create || hit != null)
+                {
+                    _editZone = hit;
+                    _editStart = m;
+                    CaptureMouse();
+                }
+                e.Handled = true;
+                base.OnMouseLeftButtonDown(e);
+                return;
+            }
             for (int i = _drawZones.Count - 1; i >= 0; i--)
             {
                 var (zone, c) = _drawZones[i];
@@ -512,6 +640,55 @@ namespace LiraSlabZones.Revit2023.UI
                 }
             }
             base.OnMouseLeftButtonDown(e);
+        }
+
+        protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+        {
+            if (_result != null && _editStart != null)
+            {
+                var end = ScreenToModel(e.GetPosition(this));
+                var start = _editStart;
+                if (_editMode == ZoneEditMode.Move && _editZone != null)
+                    ZoneEditor.Move(_editZone, end.X - start.X, end.Y - start.Y, _result.Outline);
+                else if (_editMode == ZoneEditMode.Resize && _editZone != null)
+                    ZoneEditor.Resize(_editZone,
+                        Math.Min(start.X, end.X), Math.Max(start.X, end.X),
+                        Math.Min(start.Y, end.Y), Math.Max(start.Y, end.Y), _result.Outline);
+                else if (_editMode == ZoneEditMode.Create)
+                {
+                    var template = _editZone ?? _result.Zones.FirstOrDefault();
+                    if (template != null)
+                    {
+                        var created = ZoneEditor.Create(template,
+                            Math.Min(start.X, end.X), Math.Max(start.X, end.X),
+                            Math.Min(start.Y, end.Y), Math.Max(start.Y, end.Y), _result.Outline);
+                        if (created != null) _result.Zones.Add(created);
+                    }
+                }
+                _editStart = null;
+                _editZone = null;
+                ReleaseMouseCapture();
+                CommitEdits();
+                e.Handled = true;
+            }
+            base.OnMouseLeftButtonUp(e);
+        }
+
+        private AdditionalZone? HitZone(Point3 point)
+        {
+            for (var i = _drawZones.Count - 1; i >= 0; i--)
+                if (PointInPoly(point, _drawZones[i].Contour)) return _drawZones[i].Zone;
+            return null;
+        }
+
+        private void CommitEdits()
+        {
+            if (_result == null) return;
+            for (var i = 0; i < _result.Zones.Count; i++) _result.Zones[i].ZoneId = i + 1;
+            RebuildDrawList();
+            _selectedZoneId = null;
+            ZonesEdited?.Invoke();
+            InvalidateVisual();
         }
 
         protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -761,11 +938,8 @@ namespace LiraSlabZones.Revit2023.UI
                 : (int)Math.Round(UnitConversion.MetersToMm(zone.LengthM));
             if (lenMm < 1) lenMm = zone.BarCount > 0 ? zone.BarCount : 0;
             var step = zone.BarStepMm > 0 ? zone.BarStepMm : 200;
-            var widthMm = zone.WidthMm > 0
-                ? (int)Math.Round(zone.WidthMm)
-                : (int)Math.Round(UnitConversion.MetersToMm(zone.WidthM));
             var count = Math.Max(1, zone.BarCount);
-            return ($"{zone.DiameterMm}-{lenMm} ×{count}", $"шаг {step} · B{widthMm}");
+            return ($"{zone.DiameterMm}-{lenMm} ×{count}", $"шаг {step}");
         }
 
         /// <summary>

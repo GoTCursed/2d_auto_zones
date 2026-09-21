@@ -376,7 +376,7 @@ namespace LiraSlabZones.Core
             IList<Point3>? outline, double insetMm)
         {
             if (outline == null || outline.Count < 3) return true;
-            var inset = (insetMm > 0 ? insetMm : 30) / 1000.0;
+            var inset = Math.Max(0, insetMm) / 1000.0;
             var oMinX = outline.Min(p => p.X) + inset;
             var oMaxX = outline.Max(p => p.X) - inset;
             var oMinY = outline.Min(p => p.Y) + inset;
@@ -394,10 +394,54 @@ namespace LiraSlabZones.Core
             var cy = (minY + maxY) * 0.5;
             if (!PointInPolygon(cx, cy, outline)) return false;
 
-            // Для криволинейных и ступенчатых границ углы прямоугольной зоны могут
-            // выходить за ломаную даже при корректном центре. Жёсткая проверка углов
-            // удаляла расчётные пятна у фасада; наружный AABB уже подрезан выше.
-            return true;
+            // AABB clipping alone is insufficient at stepped, sloped and curved
+            // boundaries. Contract only the sides whose corners remain outside.
+            const double trimStepM = 0.01;
+            const double cornerInsetM = 1e-6;
+            for (var iteration = 0; iteration < 2000; iteration++)
+            {
+                cx = (minX + maxX) * 0.5;
+                cy = (minY + maxY) * 0.5;
+                var leftBottomInside = PointInPolygon(minX + cornerInsetM, minY + cornerInsetM, outline);
+                var leftTopInside = PointInPolygon(minX + cornerInsetM, maxY - cornerInsetM, outline);
+                var rightBottomInside = PointInPolygon(maxX - cornerInsetM, minY + cornerInsetM, outline);
+                var rightTopInside = PointInPolygon(maxX - cornerInsetM, maxY - cornerInsetM, outline);
+                if (leftBottomInside && leftTopInside && rightBottomInside && rightTopInside)
+                    return true;
+
+                var trimLeft = !leftBottomInside && !leftTopInside;
+                var trimRight = !rightBottomInside && !rightTopInside;
+                var trimBottom = !leftBottomInside && !rightBottomInside;
+                var trimTop = !leftTopInside && !rightTopInside;
+                if (!trimLeft && !trimRight && !trimBottom && !trimTop)
+                {
+                    var width = maxX - minX;
+                    var height = maxY - minY;
+                    if (!leftBottomInside)
+                    {
+                        if (height <= width) trimLeft = true; else trimBottom = true;
+                    }
+                    else if (!leftTopInside)
+                    {
+                        if (height <= width) trimLeft = true; else trimTop = true;
+                    }
+                    else if (!rightBottomInside)
+                    {
+                        if (height <= width) trimRight = true; else trimBottom = true;
+                    }
+                    else if (!rightTopInside)
+                    {
+                        if (height <= width) trimRight = true; else trimTop = true;
+                    }
+                }
+                if (trimLeft) minX = Math.Min(cx, minX + trimStepM);
+                if (trimRight) maxX = Math.Max(cx, maxX - trimStepM);
+                if (trimBottom) minY = Math.Min(cy, minY + trimStepM);
+                if (trimTop) maxY = Math.Max(cy, maxY - trimStepM);
+                if (maxX - minX < 0.05 || maxY - minY < 0.05)
+                    return false;
+            }
+            return false;
         }
     }
 }

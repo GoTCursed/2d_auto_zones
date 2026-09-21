@@ -370,6 +370,8 @@ namespace LiraSlabZones.Core
         public double SlabEdgeInsetMm { get; set; } = 30;
         /// <summary>true → разрешить подбор из шагов 100 и 200 мм; false → только 200 мм.</summary>
         public bool UseBarStep100 { get; set; }
+        /// <summary>Swap layer directions: As1/As3 use Y, As2/As4 use X.</summary>
+        public bool ReverseZoneDirections { get; set; }
 
         /// <summary>Пересчитать AsMainAs1…4 из Ø/шага фона (низ → As1/As2, верх → As3/As4).</summary>
         public void SyncBackgroundAsFromBars()

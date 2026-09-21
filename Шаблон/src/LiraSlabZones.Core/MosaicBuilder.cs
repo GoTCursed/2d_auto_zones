@@ -16,6 +16,15 @@ namespace LiraSlabZones.Core
         public double[][] Values { get; set; } = Array.Empty<double[]>();
         public List<int>[][] PlateIds { get; set; } = Array.Empty<List<int>[]>();
         public Dictionary<int, Point3> PlateCentroids { get; set; } = new Dictionary<int, Point3>();
+        public Dictionary<int, ElementBounds> PlateBounds { get; set; } = new Dictionary<int, ElementBounds>();
+    }
+
+    public sealed class ElementBounds
+    {
+        public double MinX { get; set; }
+        public double MaxX { get; set; }
+        public double MinY { get; set; }
+        public double MaxY { get; set; }
     }
 
     /// <summary>Строит регулярную мозаику As−фон из КЭ пластин.</summary>
@@ -118,7 +127,20 @@ namespace LiraSlabZones.Core
                 LevelZM = levelZM,
                 Values = values,
                 PlateIds = ids,
-                PlateCentroids = ok.ToDictionary(p => p.Id, p => p.Centroid)
+                PlateCentroids = ok.ToDictionary(p => p.Id, p => p.Centroid),
+                PlateBounds = ok.ToDictionary(p => p.Id, p =>
+                {
+                    var points = p.Contour != null && p.Contour.Count >= 3
+                        ? p.Contour
+                        : new List<Point3> { p.Centroid };
+                    return new ElementBounds
+                    {
+                        MinX = points.Min(q => q.X),
+                        MaxX = points.Max(q => q.X),
+                        MinY = points.Min(q => q.Y),
+                        MaxY = points.Max(q => q.Y)
+                    };
+                })
             };
         }
 

@@ -13,3 +13,4 @@ C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraS
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net48\LiraSlabZones.Core.dll
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\obj\x64\Release\net48\LiraSlabZones.Core.pdb
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net48\DefaultSettings.cfg
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Core\bin\x64\Release\net48\Clipper2Lib.dll

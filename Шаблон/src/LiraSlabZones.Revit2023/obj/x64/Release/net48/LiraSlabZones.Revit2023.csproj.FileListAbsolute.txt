@@ -22,3 +22,4 @@ C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraS
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2023\obj\x64\Release\net48\LiraSlabZones.Revit2023.dll
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2023\obj\x64\Release\net48\LiraSlabZones.Revit2023.pdb
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2023\bin\x64\Release\net48\DefaultSettings.cfg
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2023\bin\x64\Release\net48\Clipper2Lib.dll

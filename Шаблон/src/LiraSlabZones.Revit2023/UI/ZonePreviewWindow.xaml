@@ -156,6 +156,9 @@
                        Text="Допки не раскладываются, пока не выбрана плита, не задан фон (низ+верх) и класс бетона."/>
             <CheckBox x:Name="ChkAutoLayout" Content="Автораскладка (SUM-30…34)" IsChecked="True"
                       Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+            <CheckBox x:Name="ChkReverseDirections" Content="Реверс направлений зон (As1/As3 → Y)"
+                      ToolTip="As1 и As3 раскладываются по Y; As2 и As4 — по X"
+                      Checked="SettingsChanged" Unchecked="SettingsChanged"/>
             <TextBlock Text="Детализация: Max → Min (как в настройках увязки)"/>
             <Slider x:Name="SldDetail" Minimum="0" Maximum="1" Value="0"
                     TickFrequency="0.25" IsSnapToTickEnabled="True"
@@ -267,6 +270,13 @@
         <DockPanel Margin="8,6">
           <TextBlock x:Name="TxtTitle" Text="Плита — превью" FontWeight="SemiBold" FontSize="14"/>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="↖" Width="28" Margin="0,0,3,0" Click="BtnEditSelect_Click" ToolTip="Выбор зоны"/>
+            <Button Content="✥" Width="28" Margin="0,0,3,0" Click="BtnEditMove_Click" ToolTip="Переместить: протяните выбранную зону"/>
+            <Button Content="↔" Width="28" Margin="0,0,3,0" Click="BtnEditResize_Click" ToolTip="Изменить размер: протяните новую рамку зоны"/>
+            <Button Content="+▭" Width="34" Margin="0,0,3,0" Click="BtnEditCreate_Click" ToolTip="Создать зону рамкой; свойства берутся с выбранной зоны"/>
+            <Button Content="┆" Width="28" Margin="0,0,3,0" Click="BtnEditSplit_Click" ToolTip="Разделить зону в точке клика"/>
+            <Button Content="∪" Width="28" Margin="0,0,3,0" Click="BtnEditMerge_Click" ToolTip="Объединить две последовательно выбранные зоны"/>
+            <Button Content="×" Width="28" Margin="0,0,10,0" Click="BtnEditDelete_Click" ToolTip="Удалить зону"/>
             <Button Content="−" Width="28" Margin="0,0,4,0" Click="BtnZoomOut_Click" ToolTip="Отдалить"/>
             <Button Content="+" Width="28" Margin="0,0,4,0" Click="BtnZoomIn_Click" ToolTip="Приблизить"/>
             <Button Content="100%" Width="44" Margin="0,0,4,0" Click="BtnZoomReset_Click" ToolTip="Сброс масштаба"/>

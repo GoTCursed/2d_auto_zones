@@ -51,8 +51,28 @@ namespace LiraSlabZones.Revit2023.UI
                         z.Comment;
                 };
                 Viewport.StatusChanged += s => TxtStatus.Text = s;
+                Viewport.ZonesEdited += () =>
+                {
+                    if (_result == null) return;
+                    TxtTitle.Text = $"{_result.DocumentName} · Z = {_result.ElevationZM:F3} м · зон: {_result.Zones.Count}";
+                    Log($"Зоны отредактированы: {_result.Zones.Count}", "ok");
+                };
             };
         }
+
+        private void SetZoneEditMode(ZoneEditMode mode)
+        {
+            Viewport.SetEditMode(mode);
+            TxtStatus.Text = $"Режим редактирования: {mode}";
+        }
+
+        private void BtnEditSelect_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Select);
+        private void BtnEditMove_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Move);
+        private void BtnEditResize_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Resize);
+        private void BtnEditCreate_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Create);
+        private void BtnEditSplit_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Split);
+        private void BtnEditMerge_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Merge);
+        private void BtnEditDelete_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.Delete);
 
         public void SetPlaceCallback(Action<AnalysisResult> callback)
         {
@@ -633,6 +653,7 @@ namespace LiraSlabZones.Revit2023.UI
                 DetailSlider = detailSlider,
                 BarStepMm = barStep,
                 UseBarStep100 = ChkBarStep100.IsChecked == true,
+                ReverseZoneDirections = ChkReverseDirections.IsChecked == true,
                 ConcreteClass = concrete,
                 GridCellMm = I(TbGridCell.Text, 300),
                 SlabThicknessMm = D(TbThick.Text, 200),
@@ -686,6 +707,7 @@ namespace LiraSlabZones.Revit2023.UI
             TbCoverTop.Text = s.CoverTopMm.ToString("0.##", CultureInfo.InvariantCulture);
 
             ChkBarStep100.IsChecked = s.UseBarStep100 || s.BarStepMm == 100;
+            ChkReverseDirections.IsChecked = s.ReverseZoneDirections;
             SelectCombo(CmbConcrete, string.IsNullOrWhiteSpace(s.ConcreteClass) ? "—" : s.ConcreteClass);
             SelectFamilyInCombo(s.FamilyStraight);
             if (CmbZoneFamily.SelectedIndex < 0)

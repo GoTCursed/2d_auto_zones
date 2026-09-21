@@ -1,9 +1,10 @@
 {
   "version": 2,
-  "dgSpecHash": "rnix1FwroYQ=",
+  "dgSpecHash": "1B6QAuAI0Ew=",
   "success": true,
   "projectFilePath": "C:\\Users\\Filippov_G\\Pictures\\2DSaveliyZones\\2d_auto_zones\\Шаблон\\src\\LiraSlabZones.Exporter\\LiraSlabZones.Exporter.csproj",
   "expectedPackageFiles": [
+    "C:\\Users\\Filippov_G\\.nuget\\packages\\clipper2\\2.0.0\\clipper2.2.0.0.nupkg.sha512",
     "C:\\Users\\Filippov_G\\.nuget\\packages\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512"
   ],
   "logs": []

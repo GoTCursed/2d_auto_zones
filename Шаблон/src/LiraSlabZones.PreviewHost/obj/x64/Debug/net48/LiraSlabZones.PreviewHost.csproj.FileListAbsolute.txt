@@ -22,3 +22,4 @@ C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraS
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.PreviewHost\obj\x64\Debug\net48\LiraSlab.3DA6031D.Up2Date
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.PreviewHost\obj\x64\Debug\net48\LiraSlabZones.PreviewHost.exe
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.PreviewHost\obj\x64\Debug\net48\LiraSlabZones.PreviewHost.pdb
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.PreviewHost\bin\x64\Debug\net48\Clipper2Lib.dll

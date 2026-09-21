@@ -16,3 +16,4 @@ C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraS
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Exporter\obj\x64\Debug\net48\LiraSlab.307677D2.Up2Date
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Exporter\obj\x64\Debug\net48\LiraSlabZones.Exporter.exe
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Exporter\obj\x64\Debug\net48\LiraSlabZones.Exporter.pdb
+C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Exporter\bin\x64\Debug\net48\Clipper2Lib.dll

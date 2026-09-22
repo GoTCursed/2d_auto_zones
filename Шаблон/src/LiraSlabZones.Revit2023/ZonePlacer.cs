@@ -20,7 +20,10 @@ namespace LiraSlabZones.Revit2023
             int count = 0;
             var cache = new Dictionary<string, FamilySymbol?>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var group in analysis.Zones.GroupBy(z => settings.GetFamilyName(z.FamilyKind)))
+            foreach (var group in analysis.Zones.GroupBy(z =>
+                string.IsNullOrWhiteSpace(z.FamilyFileName)
+                    ? settings.GetFamilyName(z.FamilyKind)
+                    : AppConfig.StripRfa(z.FamilyFileName)))
             {
                 var familyName = group.Key;
                 if (!cache.TryGetValue(familyName, out var symbol))

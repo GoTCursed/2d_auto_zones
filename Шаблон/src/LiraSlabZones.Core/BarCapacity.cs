@@ -25,17 +25,20 @@ namespace LiraSlabZones.Core
 
         /// <summary>Минимальный Ø ≤ maxDiameter, дающий As ≥ required при заданном шаге.</summary>
         public static int MinDiameterForAs(
-            double requiredAsCm2PerM, int stepMm, int maxDiameterMm, int minDiameterMm = 0)
+            double requiredAsCm2PerM, int stepMm, int maxDiameterMm, int minDiameterMm = 0,
+            int[]? excludedDiametersMm = null)
         {
             if (requiredAsCm2PerM <= 0.01) return 0;
             var maxD = Math.Min(maxDiameterMm, RebarTables.AllowedDiametersMm.Max());
-            foreach (var d in RebarTables.AllowedDiametersMm.Where(x => x >= minDiameterMm && x <= maxD))
+            foreach (var d in RebarTables.AllowedDiametersMm.Where(x => x >= minDiameterMm && x <= maxD &&
+                         (excludedDiametersMm == null || !excludedDiametersMm.Contains(x))))
             {
                 if (AsCm2PerM(d, stepMm) + 1e-9 >= requiredAsCm2PerM)
                     return d;
             }
             return RebarTables.AllowedDiametersMm
-                .Where(x => x >= minDiameterMm && x <= maxD)
+                .Where(x => x >= minDiameterMm && x <= maxD &&
+                            (excludedDiametersMm == null || !excludedDiametersMm.Contains(x)))
                 .DefaultIfEmpty(0)
                 .Max();
         }
@@ -45,13 +48,15 @@ namespace LiraSlabZones.Core
         /// При allowStep100=false используется только шаг 200 мм.
         /// </summary>
         public static (int DiameterMm, int StepMm) SelectDiameterAndStep(
-            double requiredAsCm2PerM, int maxDiameterMm, int minDiameterMm, bool allowStep100)
+            double requiredAsCm2PerM, int maxDiameterMm, int minDiameterMm, bool allowStep100,
+            int[]? excludedDiametersMm = null)
         {
             var steps = allowStep100 ? new[] { 200, 100 } : new[] { 200 };
             var options = steps
                 .Select(step =>
                 {
-                    var diameter = MinDiameterForAs(requiredAsCm2PerM, step, maxDiameterMm, minDiameterMm);
+                    var diameter = MinDiameterForAs(requiredAsCm2PerM, step, maxDiameterMm, minDiameterMm,
+                        excludedDiametersMm);
                     var capacity = diameter > 0 ? AsCm2PerM(diameter, step) : 0;
                     return new { Diameter = diameter, Step = step, Capacity = capacity };
                 })

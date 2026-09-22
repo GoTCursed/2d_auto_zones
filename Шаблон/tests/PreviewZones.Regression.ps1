@@ -63,6 +63,8 @@ function Assert-ZoneRules($zones, [int]$backgroundDiameter) {
 }
 
 $step200 = [LiraSlabZones.Core.BarCapacity]::SelectDiameterAndStep(11.0, 36, 12, $false)
+$excluded = [LiraSlabZones.Core.BarCapacity]::SelectDiameterAndStep(11.0, 36, 12, $false, [int[]]@(16))
+Assert ($excluded.DiameterMm -ne 16) 'Excluded diameter was selected.'
 $mixed = [LiraSlabZones.Core.BarCapacity]::SelectDiameterAndStep(11.0, 36, 12, $true)
 $mixed200 = [LiraSlabZones.Core.BarCapacity]::SelectDiameterAndStep(6.0, 36, 12, $true)
 Assert ($step200.Item1 -ge 12 -and $step200.Item2 -eq 200) 'Single-spacing mode must use 200 mm.'
@@ -99,10 +101,16 @@ Write-Host 'PASS Clipper2 zone create, move, resize, split and merge'
 $manual = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 1, 7, 2, 5, $editOutline)
 [LiraSlabZones.Core.ZoneEditor]::SetDiameter($manual, 20)
 Assert ($manual.DiameterMm -eq 20 -and $manual.AsCoveredCm2PerM -gt 0) 'Manual diameter was not applied.'
-[LiraSlabZones.Core.ZoneEditor]::SetDirectionPerpendicularToEdge($manual, $false)
-Assert ($manual.Direction -eq [LiraSlabZones.Core.ZoneDirection]::Y) 'Horizontal edge must produce perpendicular Y direction.'
-Assert ([Math]::Abs($manual.LengthM - 3) -lt 0.001 -and [Math]::Abs($manual.WidthM - 6) -lt 0.001) 'Direction dimensions were not recalculated.'
-Write-Host 'PASS manual zone diameter and perpendicular edge direction'
+$edgeParts = [LiraSlabZones.Core.ZoneEditor]::SplitPerpendicularToEdge($manual, 4, 3.5, $false, $editOutline)
+Assert ($edgeParts.Count -eq 2) 'Horizontal edge must create two zones by a vertical cut.'
+Assert ([Math]::Abs($edgeParts[0].LengthM - 3) -lt 0.001) 'Vertical cut is not at the clicked X coordinate.'
+$verticalParts = [LiraSlabZones.Core.ZoneEditor]::SplitPerpendicularToEdge($manual, 4, 3.5, $true, $editOutline)
+Assert ($verticalParts.Count -eq 2) 'Vertical edge must create two zones by a horizontal cut.'
+Assert ([LiraSlabZones.Core.ZoneEditor]::ResizeByDimensions($manual, 4000, 2000, $editOutline)) 'Manual dimensions were rejected.'
+Assert ([Math]::Abs($manual.LengthMm - 4000) -lt 1 -and [Math]::Abs($manual.WidthMm - 2000) -lt 1) 'Manual dimensions were not applied.'
+[LiraSlabZones.Core.ZoneEditor]::SetFamily($manual, [LiraSlabZones.Core.ZoneFamilyKind]::L, 'Custom SUM-31')
+Assert ($manual.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::L -and $manual.FamilyFileName -eq 'Custom SUM-31') 'Manual family was not applied.'
+Write-Host 'PASS manual diameter, edge split, dimensions and family'
 $gapMoving = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 4, 6, 2, 4, $editOutline)
 $gapFixed = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 6, 8, 2, 4, $editOutline)
 $gapMoving.BarStepMm = 100
@@ -114,6 +122,26 @@ $fixedMin = ($gapFixed.Contour.X | Measure-Object -Minimum).Minimum
 Assert ([Math]::Abs(($fixedMin - $movingMax) - 0.1) -lt 0.001) 'Manual gap is not equal to the smaller 100 mm spacing.'
 Assert ([Math]::Abs($fixedMin - $fixedMinBefore) -lt 0.000001) 'Reference zone moved while creating a gap.'
 Write-Host 'PASS two-click gap uses the smaller zone spacing'
+$holePlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+for ($hy = 0; $hy -lt 6; $hy++) {
+    for ($hx = 0; $hx -lt 6; $hx++) {
+        if (($hx -in @(2,3) -and $hy -in @(2,3)) -or ($hx -eq 4 -and $hy -eq 4)) { continue }
+        $plate = [LiraSlabZones.Core.LiraPlateElement]::new()
+        $plate.Id = $hy * 6 + $hx + 1
+        foreach ($point in @(@($hx,$hy),@(($hx+1),$hy),@(($hx+1),($hy+1)),@($hx,($hy+1)))) {
+            $plate.Contour.Add([LiraSlabZones.Core.Point3]::new($point[0], $point[1], 0))
+        }
+        $holePlates.Add($plate)
+    }
+}
+$holeOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+foreach ($point in @(@(0,0),@(6,0),@(6,6),@(0,6))) {
+    $holeOutline.Add([LiraSlabZones.Core.Point3]::new($point[0], $point[1], 0))
+}
+$detectedHoles = [LiraSlabZones.Core.SlabOpenings]::Detect($holePlates, $holeOutline)
+Assert ($detectedHoles.Count -eq 1) "Expected only the 2x2 FE opening, got $($detectedHoles.Count)."
+Assert ([Math]::Abs($detectedHoles[0].WidthM - 2) -lt 0.001 -and [Math]::Abs($detectedHoles[0].HeightM - 2) -lt 0.001) 'Opening dimensions are incorrect.'
+Write-Host 'PASS opening detection ignores 1x1 FE gaps and keeps 2x2 FE gaps'
 Assert ([LiraSlabZones.Core.RebarTables]::PickFamilyLength(3460) -eq 3900) '3460 mm was not rounded up to the 3900 mm family length.'
 Write-Host 'PASS family length rounds 3460 mm up to 3900 mm'
 Assert ([LiraSlabZones.Core.RebarTables]::BentBarTotalLengthMm(3460, 150, [LiraSlabZones.Core.ZoneFamilyKind]::L) -eq 3610) 'SUM-31 total length is wrong.'
@@ -516,6 +544,50 @@ function Render-Preview($result) {
 }
 
 $withZones = Render-Preview $loaded
+$undoViewport = [LiraSlabZones.Revit2023.UI.PreviewViewport]::new()
+$undoViewport.SetData($loaded, $loaded.Settings, $true, $false)
+$selectedField = $undoViewport.GetType().GetField('_selectedZoneId', [Reflection.BindingFlags]'NonPublic,Instance')
+$selectedField.SetValue($undoViewport, $loaded.Zones[0].ZoneId)
+$originalFamily = $loaded.Zones[0].FamilyFileName
+for ($editIndex = 1; $editIndex -le 51; $editIndex++) {
+    Assert ($undoViewport.SetSelectedFamily([LiraSlabZones.Core.ZoneFamilyKind]::Straight, "UndoTest-$editIndex")) 'Undo setup edit failed.'
+}
+for ($editIndex = 0; $editIndex -lt 50; $editIndex++) {
+    Assert ($undoViewport.UndoLastEdit()) "Undo action $editIndex failed."
+}
+Assert ($loaded.Zones[0].FamilyFileName -eq 'UndoTest-1') 'Fifty-level undo did not retain the oldest edit.'
+Assert (-not $undoViewport.UndoLastEdit()) 'Undo exceeded its fifty-action limit.'
+$loaded.Zones[0].FamilyFileName = $originalFamily
+Write-Host 'PASS undo restores at most fifty manual edits'
+$edgeZone = $loaded.Zones[0]
+$originalZones = $loaded.Zones
+$loaded.Zones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$loaded.Zones.Add($edgeZone)
+$edgeViewport = [LiraSlabZones.Revit2023.UI.PreviewViewport]::new()
+$edgeViewport.Width = 1000; $edgeViewport.Height = 700
+$edgeViewport.Measure([Windows.Size]::new(1000, 700))
+$edgeViewport.Arrange([Windows.Rect]::new(0, 0, 1000, 700))
+$edgeViewport.SetData($loaded, $loaded.Settings, $true, $false)
+$flags = [Reflection.BindingFlags]'NonPublic,Instance'
+$bounds = $edgeZone.Contour
+$minX = ($bounds.X | Measure-Object -Minimum).Minimum
+$maxX = ($bounds.X | Measure-Object -Maximum).Maximum
+$midY = (($bounds.Y | Measure-Object -Minimum).Minimum + ($bounds.Y | Measure-Object -Maximum).Maximum) / 2
+$hitMethod = $edgeViewport.GetType().GetMethod('HitResizeEdge', $flags)
+$hit = $hitMethod.Invoke($edgeViewport, @([LiraSlabZones.Core.Point3]::new($maxX, $midY, $edgeZone.LevelZM)))
+Assert ($hit.Item1 -eq $edgeZone -and $hit.Item2.ToString() -eq 'Right') 'Right zone edge was not detected for dragging.'
+$edgeViewport.GetType().GetMethod('BeginEdit', $flags).Invoke($edgeViewport, @())
+$edgeField = $edgeViewport.GetType().GetField('_resizeEdge', $flags)
+$edgeField.SetValue($edgeViewport, [Enum]::Parse($edgeField.FieldType, 'Right'))
+$boundsField = $edgeViewport.GetType().GetField('_resizeBounds', $flags)
+$minY = ($bounds.Y | Measure-Object -Minimum).Minimum
+$maxY = ($bounds.Y | Measure-Object -Maximum).Maximum
+$boundsField.SetValue($edgeViewport, [ValueTuple[double,double,double,double]]::new($minX,$maxX,$minY,$maxY))
+$dragMethod = $edgeViewport.GetType().GetMethod('ResizeDraggedEdge', $flags)
+Assert ($dragMethod.Invoke($edgeViewport, @($edgeZone, [LiraSlabZones.Core.Point3]::new($maxX - 0.1, $midY, $edgeZone.LevelZM)))) 'Dragging right edge failed.'
+Assert ([Math]::Abs((($edgeZone.Contour.X | Measure-Object -Minimum).Minimum) - $minX) -lt 0.001) 'Dragging right edge moved the opposite edge.'
+$loaded.Zones = $originalZones
+Write-Host 'PASS dragging a zone edge keeps the opposite edge fixed'
 $savedZones = $loaded.Zones
 $loaded.Zones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $withoutZones = Render-Preview $loaded

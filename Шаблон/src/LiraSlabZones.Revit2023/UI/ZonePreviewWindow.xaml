@@ -272,7 +272,7 @@
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="↖" Width="28" Margin="0,0,3,0" Click="BtnEditSelect_Click" ToolTip="Выбор зоны"/>
             <Button Content="✥" Width="28" Margin="0,0,3,0" Click="BtnEditMove_Click" ToolTip="Переместить: протяните выбранную зону"/>
-            <Button Content="↔" Width="28" Margin="0,0,3,0" Click="BtnEditResize_Click" ToolTip="Изменить размер: протяните новую рамку зоны"/>
+            <Button Content="↔" Width="28" Margin="0,0,3,0" Click="BtnEditResize_Click" ToolTip="Изменить размер: перетащите край зоны"/>
             <Button Content="+▭" Width="34" Margin="0,0,3,0" Click="BtnEditCreate_Click" ToolTip="Создать зону рамкой; свойства берутся с выбранной зоны"/>
             <Button Content="┆" Width="28" Margin="0,0,3,0" Click="BtnEditSplit_Click" ToolTip="Разделить зону в точке клика"/>
             <Button Content="∪" Width="28" Margin="0,0,3,0" Click="BtnEditMerge_Click" ToolTip="Объединить две последовательно выбранные зоны"/>
@@ -319,10 +319,19 @@
         <ListBox x:Name="LstLog" FontSize="11"/>
       </GroupBox>
       <GroupBox Header="Выбранная зона" >
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel>
           <TextBlock x:Name="TxtZoneInfo" TextWrapping="Wrap" FontSize="12" Text="Кликните зону на холсте"/>
           <Separator Margin="0,8,0,8"/>
           <TextBlock Text="Диаметр, мм" FontSize="11" Foreground="#6B7280"/>
+          <Button Content="Доступные диаметры" Click="BtnZoneDiameters_Click" Margin="0,3,0,4"/>
+          <Popup x:Name="PopupZoneDiameters" Placement="Bottom" StaysOpen="False"
+                 PlacementTarget="{Binding ElementName=BtnZoneDiametersAnchor}">
+            <Border Background="White" BorderBrush="#CBD5E1" BorderThickness="1" Padding="8">
+              <StackPanel x:Name="PanelZoneDiameters"/>
+            </Border>
+          </Popup>
+          <Border x:Name="BtnZoneDiametersAnchor" Height="0"/>
           <DockPanel Margin="0,3,0,6">
             <Button DockPanel.Dock="Right" Content="Применить Ø" Margin="6,0,0,0"
                     Click="BtnApplyZoneDiameter_Click" ToolTip="Изменить диаметр выбранной зоны"/>
@@ -333,9 +342,37 @@
               <ComboBoxItem Content="36"/>
             </ComboBox>
           </DockPanel>
+          <TextBlock Text="Шаг зоны, мм" FontSize="11" Foreground="#6B7280"/>
+          <DockPanel Margin="0,3,0,6">
+            <Button DockPanel.Dock="Right" Content="Применить шаг" Margin="6,0,0,0"
+                    Click="BtnApplyZoneStep_Click"/>
+            <ComboBox x:Name="CmbSelectedZoneStep" MinWidth="80" SelectedIndex="1">
+              <ComboBoxItem Content="100"/><ComboBoxItem Content="200"/>
+            </ComboBox>
+          </DockPanel>
           <Button Content="⊥ Выбрать грань" Click="BtnEditPerpendicular_Click"
-                  ToolTip="Кликните нужную грань зоны; продольное направление будет задано перпендикулярно ей"/>
+                  ToolTip="Кликните у грани зоны: разрез пройдёт через точку клика перпендикулярно этой грани"/>
+          <Separator Margin="0,8,0,8"/>
+          <TextBlock Text="Габариты зоны, мм (L × B)" FontSize="11" Foreground="#6B7280"/>
+          <Grid Margin="0,4,0,6">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <TextBox x:Name="TbSelectedLengthMm" Grid.Column="0" ToolTip="Длина вдоль стержней, мм"/>
+            <TextBox x:Name="TbSelectedWidthMm" Grid.Column="2" ToolTip="Ширина поперёк стержней, мм"/>
+          </Grid>
+          <Button Content="Применить габариты" Click="BtnApplyZoneDimensions_Click"/>
+          <TextBlock Text="Семейство зоны" FontSize="11" Foreground="#6B7280" Margin="0,8,0,3"/>
+          <ComboBox x:Name="CmbSelectedZoneFamilyKind" SelectedIndex="0" SelectionChanged="SelectedZoneFamilyKindChanged">
+            <ComboBoxItem Content="SUM-30 · прямой" Tag="Straight"/>
+            <ComboBoxItem Content="SUM-31 · Г" Tag="L"/>
+            <ComboBoxItem Content="SUM-32 · П равнополочная" Tag="PEqual"/>
+            <ComboBoxItem Content="SUM-33 · П разнополочная" Tag="PDiff"/>
+            <ComboBoxItem Content="SUM-34 · гнутый стержень" Tag="BentStick"/>
+          </ComboBox>
+          <ComboBox x:Name="CmbSelectedZoneFamilyName" IsEditable="True" Margin="0,4,0,4"
+                    ToolTip="Имя загруженного в проект семейства; допускается ручной ввод"/>
+          <Button Content="Применить семейство" Click="BtnApplyZoneFamily_Click"/>
         </StackPanel>
+        </ScrollViewer>
       </GroupBox>
     </DockPanel>
   </Grid>

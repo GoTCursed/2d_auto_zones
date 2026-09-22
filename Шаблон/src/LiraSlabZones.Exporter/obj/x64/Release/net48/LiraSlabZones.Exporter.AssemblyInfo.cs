@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LiraSlabZones.Exporter")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2a99bb420193bd6cf03700f387bca60c2e5a2c81")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3fd4c3adad1c27dfe1e1c648fd2ee969353c7514")]
 [assembly: System.Reflection.AssemblyProductAttribute("LiraSlabZones.Exporter")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LiraSlabZones.Exporter")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -133,7 +133,11 @@ namespace LiraSlabZones.Core
             }
 
             var outline = MeshBoundary.BuildOuterContour(levelPlates);
-            var zones = ZoneLayoutEngine.Layout(levelPlates, settings, openings: openings, outline: outline, axes: axes);
+            var detectedOpenings = SlabOpenings.Detect(levelPlates, outline);
+            if (openings != null)
+                detectedOpenings.AddRange(openings.Where(op => !detectedOpenings.Any(existing =>
+                    Math.Abs(existing.MinXM - op.MinXM) < 0.001 && Math.Abs(existing.MinYM - op.MinYM) < 0.001)));
+            var zones = ZoneLayoutEngine.Layout(levelPlates, settings, openings: detectedOpenings, outline: outline, axes: axes);
             var stats = ComputeStats(zones, settings, outline, levelPlates);
 
             return new AnalysisResult
@@ -149,7 +153,7 @@ namespace LiraSlabZones.Core
                 Outline = outline,
                 Zones = zones,
                 Axes = axes ?? new List<ConstructionAxis>(),
-                Openings = openings ?? new List<OpeningInfo>(),
+                Openings = detectedOpenings,
                 ElevationZM = elev,
                 ElevationLabel = elevationLabel ?? $"Z = {elev:F3} м",
                 Stats = stats
@@ -199,9 +203,11 @@ namespace LiraSlabZones.Core
                         asAdd,
                         settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36,
                         backgroundDiameter,
-                        settings.UseBarStep100);
+                        settings.UseBarStep100,
+                        settings.ExcludedZoneDiametersMm?.ToArray());
                     var step = option.StepMm;
                     var d = option.DiameterMm;
+                    if (d <= 0) continue;
                     var span = UnitConversion.MetersToMm(Math.Min(plate.WidthM, plate.LengthM));
                     var (barCount, widthMm) = BarCapacity.BarsForSpanAndAs(asAdd, d, step, span);
 

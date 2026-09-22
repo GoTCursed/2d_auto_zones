@@ -32,11 +32,43 @@ namespace LiraSlabZones.Core
             zone.Comment = "диаметр изменён в предпросмотре";
         }
 
-        public static void SetDirectionPerpendicularToEdge(AdditionalZone zone, bool verticalEdge)
+        public static void SetStep(AdditionalZone zone, int stepMm)
         {
-            zone.Direction = verticalEdge ? ZoneDirection.X : ZoneDirection.Y;
-            zone.Comment = "направление задано перпендикулярно грани";
+            if (stepMm != 100 && stepMm != 200) throw new ArgumentOutOfRangeException(nameof(stepMm));
+            zone.BarStepMm = stepMm;
+            zone.BarCount = Math.Max(2, (int)Math.Ceiling(zone.WidthMm / stepMm) + 1);
+            zone.AsCoveredCm2PerM = BarCapacity.AsCm2PerM(zone.DiameterMm, stepMm);
+            zone.Comment = "шаг изменён в предпросмотре";
+        }
+
+        public static List<AdditionalZone> SplitPerpendicularToEdge(
+            AdditionalZone zone, double xM, double yM, bool verticalEdge, IList<Point3> slab)
+        {
+            // A vertical edge determines a horizontal cut, and vice versa.
+            return Split(zone, verticalEdge ? yM : xM, !verticalEdge, slab);
+        }
+
+        public static bool ResizeByDimensions(AdditionalZone zone, double lengthMm, double widthMm, IList<Point3> slab)
+        {
+            if (lengthMm <= 50 || widthMm <= 50) return false;
+            var halfX = (zone.Direction == ZoneDirection.X ? lengthMm : widthMm) / 2000.0;
+            var halfY = (zone.Direction == ZoneDirection.Y ? lengthMm : widthMm) / 2000.0;
+            var candidate = Copy(zone);
+            if (!Resize(candidate, zone.Placement.X - halfX, zone.Placement.X + halfX,
+                    zone.Placement.Y - halfY, zone.Placement.Y + halfY, slab)) return false;
+            SetContour(zone, candidate.Contour.ToList());
+            zone.Comment = "габариты изменены в предпросмотре";
+            return true;
+        }
+
+        public static void SetFamily(AdditionalZone zone, ZoneFamilyKind kind, string familyName)
+        {
+            var name = AppConfig.StripRfa(familyName);
+            if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Имя семейства не задано.", nameof(familyName));
+            zone.FamilyKind = kind;
+            zone.FamilyFileName = name;
             SetContour(zone, zone.Contour.ToList());
+            zone.Comment = "семейство изменено в предпросмотре";
         }
 
         public static bool CreateGap(AdditionalZone moving, AdditionalZone reference, IList<Point3> slab)
@@ -84,6 +116,61 @@ namespace LiraSlabZones.Core
         private static (double MinX, double MaxX, double MinY, double MaxY) Bounds(IList<Point3> contour) =>
             (contour.Min(p => p.X), contour.Max(p => p.X),
              contour.Min(p => p.Y), contour.Max(p => p.Y));
+
+        public static bool IntersectsOpening(AdditionalZone zone, IList<OpeningInfo> openings)
+        {
+            if (zone.Contour.Count < 3) return false;
+            foreach (var opening in openings)
+            {
+                var overlap = Clipper.Intersect(new Paths64 { ToPath(zone.Contour) },
+                    new Paths64 { ToPath(Rectangle(opening.MinXM, opening.MaxXM,
+                        opening.MinYM, opening.MaxYM, zone.LevelZM)) }, FillRule.NonZero);
+                if (overlap.Any(path => Math.Abs(Clipper.Area(path)) > 1)) return true;
+            }
+            return false;
+        }
+
+        public static List<AdditionalZone> ExcludeOpenings(AdditionalZone zone, IList<OpeningInfo> openings)
+        {
+            var parts = new List<AdditionalZone> { zone };
+            foreach (var opening in openings)
+            {
+                var next = new List<AdditionalZone>();
+                foreach (var part in parts)
+                {
+                    var bounds = Bounds(part.Contour);
+                    var left = Math.Max(bounds.MinX, opening.MinXM);
+                    var right = Math.Min(bounds.MaxX, opening.MaxXM);
+                    var bottom = Math.Max(bounds.MinY, opening.MinYM);
+                    var top = Math.Min(bounds.MaxY, opening.MaxYM);
+                    if (right - left <= 1e-6 || top - bottom <= 1e-6)
+                    {
+                        next.Add(part);
+                        continue;
+                    }
+                    void AddPiece(double x0, double x1, double y0, double y1)
+                    {
+                        if (x1 - x0 <= 0.05 || y1 - y0 <= 0.05) return;
+                        var clipped = Clipper.Intersect(new Paths64 { ToPath(part.Contour) },
+                            new Paths64 { ToPath(Rectangle(x0, x1, y0, y1, part.LevelZM)) }, FillRule.NonZero);
+                        foreach (var path in clipped.Where(p => p.Count >= 3))
+                        {
+                            var copy = Copy(part);
+                            SetContour(copy, FromPath(path, copy.LevelZM));
+                            if (copy.LengthM <= 0.05 || copy.WidthM <= 0.05) continue;
+                            copy.Comment = "подрезано по отверстию";
+                            next.Add(copy);
+                        }
+                    }
+                    AddPiece(bounds.MinX, left, bounds.MinY, bounds.MaxY);
+                    AddPiece(right, bounds.MaxX, bounds.MinY, bounds.MaxY);
+                    AddPiece(left, right, bounds.MinY, bottom);
+                    AddPiece(left, right, top, bounds.MaxY);
+                }
+                parts = next;
+            }
+            return parts;
+        }
 
         public static AdditionalZone? Create(
             AdditionalZone template, double minX, double maxX, double minY, double maxY,
@@ -236,7 +323,10 @@ namespace LiraSlabZones.Core
             zone.Placement = new Point3((minX + maxX) / 2, (minY + maxY) / 2, zone.LevelZM);
             zone.LengthM = zone.Direction == ZoneDirection.X ? maxX - minX : maxY - minY;
             zone.WidthM = zone.Direction == ZoneDirection.X ? maxY - minY : maxX - minX;
-            zone.LengthMm = UnitConversion.MetersToMm(zone.LengthM);
+            var planLengthMm = UnitConversion.MetersToMm(zone.LengthM);
+            zone.LengthMm = zone.FamilyKind == ZoneFamilyKind.Straight
+                ? planLengthMm
+                : RebarTables.BentBarTotalLengthMm(planLengthMm, zone.VerticalLegMm, zone.FamilyKind);
             zone.WidthMm = UnitConversion.MetersToMm(zone.WidthM);
             zone.BarCount = Math.Max(2, (int)Math.Round(zone.WidthMm / Math.Max(1, zone.BarStepMm)) + 1);
         }

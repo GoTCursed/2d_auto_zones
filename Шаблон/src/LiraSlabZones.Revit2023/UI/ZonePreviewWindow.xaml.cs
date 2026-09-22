@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 using LiraSlabZones.Core;
@@ -19,11 +20,19 @@ namespace LiraSlabZones.Revit2023.UI
         private Action<AnalysisResult>? _placeCallback;
         private bool _suppressUiEvents;
         private bool _busy;
+        private bool _suppressZoneFamilySelection;
+        private readonly HashSet<int> _excludedZoneDiameters = new HashSet<int>();
         private readonly DispatcherTimer _rebuildTimer;
 
         public ZonePreviewWindow()
         {
             InitializeComponent();
+            PreviewKeyDown += (_, e) =>
+            {
+                if (e.Key != Key.Z || Keyboard.Modifiers != ModifierKeys.Control ||
+                    Keyboard.FocusedElement is TextBoxBase || Keyboard.FocusedElement is ComboBox) return;
+                e.Handled = Viewport.UndoLastEdit();
+            };
             TxtStatus.Text = "Выберите: Демо / JSON / Анализ ЛИРА";
             _rebuildTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(280) };
             _rebuildTimer.Tick += (_, __) =>
@@ -36,6 +45,18 @@ namespace LiraSlabZones.Revit2023.UI
                 Viewport.ZoneSelected += z =>
                 {
                     SelectComboValue(CmbSelectedZoneDiameter, z.DiameterMm);
+                    SelectComboValue(CmbSelectedZoneStep, z.BarStepMm);
+                    TbSelectedLengthMm.Text = z.LengthMm.ToString("0", CultureInfo.InvariantCulture);
+                    TbSelectedWidthMm.Text = z.WidthMm.ToString("0", CultureInfo.InvariantCulture);
+                    _suppressZoneFamilySelection = true;
+                    try
+                    {
+                        for (var i = 0; i < CmbSelectedZoneFamilyKind.Items.Count; i++)
+                            if ((CmbSelectedZoneFamilyKind.Items[i] as ComboBoxItem)?.Tag?.ToString() == z.FamilyKind.ToString())
+                                CmbSelectedZoneFamilyKind.SelectedIndex = i;
+                        CmbSelectedZoneFamilyName.Text = z.FamilyFileName;
+                    }
+                    finally { _suppressZoneFamilySelection = false; }
                     var bars = z.DiameterMm > 0
                         ? $"Ø{z.DiameterMm}/{z.BarStepMm}×{z.BarCount}\n{z.FamilyKind} {z.Direction}\n"
                         : "";
@@ -86,6 +107,66 @@ namespace LiraSlabZones.Revit2023.UI
                 TxtStatus.Text = "Сначала выберите зону; диаметр не может быть меньше фонового";
         }
 
+        private void BtnApplyZoneStep_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(CmbSelectedZoneStep.SelectedItem is ComboBoxItem item) ||
+                !int.TryParse(item.Content?.ToString(), out var step) ||
+                !Viewport.SetSelectedStep(step))
+                TxtStatus.Text = "Сначала выберите зону";
+        }
+
+        private void BtnZoneDiameters_Click(object sender, RoutedEventArgs e)
+        {
+            PanelZoneDiameters.Children.Clear();
+            foreach (var diameter in RebarTables.AllowedDiametersMm)
+            {
+                var value = diameter;
+                var check = new CheckBox
+                {
+                    Content = $"Ø{diameter} мм",
+                    IsChecked = !_excludedZoneDiameters.Contains(diameter),
+                    Margin = new Thickness(2)
+                };
+                check.Checked += (_, __) => { _excludedZoneDiameters.Remove(value); ScheduleZoneRebuild(); };
+                check.Unchecked += (_, __) => { _excludedZoneDiameters.Add(value); ScheduleZoneRebuild(); };
+                PanelZoneDiameters.Children.Add(check);
+            }
+            PopupZoneDiameters.IsOpen = true;
+        }
+
+        private void ScheduleZoneRebuild()
+        {
+            if (_busy || _suppressUiEvents) return;
+            _rebuildTimer.Stop();
+            _rebuildTimer.Start();
+        }
+
+        private void BtnApplyZoneDimensions_Click(object sender, RoutedEventArgs e)
+        {
+            if (!double.TryParse(TbSelectedLengthMm.Text.Replace(',', '.'), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out var length) ||
+                !double.TryParse(TbSelectedWidthMm.Text.Replace(',', '.'), NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out var width) ||
+                !Viewport.ResizeSelectedZone(length, width))
+                TxtStatus.Text = "Выберите зону и задайте L и B больше 50 мм внутри плиты";
+        }
+
+        private void SelectedZoneFamilyKindChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressZoneFamilySelection || _result == null ||
+                !(CmbSelectedZoneFamilyKind.SelectedItem is ComboBoxItem item) ||
+                !Enum.TryParse(item.Tag?.ToString(), out ZoneFamilyKind kind)) return;
+            CmbSelectedZoneFamilyName.Text = _result.Settings.GetFamilyName(kind);
+        }
+
+        private void BtnApplyZoneFamily_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(CmbSelectedZoneFamilyKind.SelectedItem is ComboBoxItem item) ||
+                !Enum.TryParse(item.Tag?.ToString(), out ZoneFamilyKind kind) ||
+                !Viewport.SetSelectedFamily(kind, CmbSelectedZoneFamilyName.Text))
+                TxtStatus.Text = "Выберите зону и укажите имя загруженного семейства";
+        }
+
         private static void SelectComboValue(ComboBox combo, int value)
         {
             foreach (var entry in combo.Items)
@@ -131,7 +212,10 @@ namespace LiraSlabZones.Revit2023.UI
                 else
                 {
                     foreach (var n in familyNames)
+                    {
                         CmbZoneFamily.Items.Add(n);
+                        CmbSelectedZoneFamilyName.Items.Add(n);
+                    }
                     TxtZoneFamilyHint.Text = $"Семейств в проекте: {familyNames.Count}. User cfg: {AppConfig.UserConfigPath}";
                 }
 
@@ -676,6 +760,7 @@ namespace LiraSlabZones.Revit2023.UI
                 DetailLevel = detail,
                 DetailSlider = detailSlider,
                 BarStepMm = barStep,
+                ExcludedZoneDiametersMm = _excludedZoneDiameters.OrderBy(d => d).ToList(),
                 UseBarStep100 = ChkBarStep100.IsChecked == true,
                 ReverseZoneDirections = ChkReverseDirections.IsChecked == true,
                 ConcreteClass = concrete,
@@ -702,6 +787,9 @@ namespace LiraSlabZones.Revit2023.UI
 
         private void ApplySettingsToUi(AnalysisSettings s)
         {
+            _excludedZoneDiameters.Clear();
+            foreach (var diameter in s.ExcludedZoneDiametersMm ?? new List<int>())
+                _excludedZoneDiameters.Add(diameter);
             ChkAs1.IsChecked = s.ShowAs1;
             ChkAs2.IsChecked = s.ShowAs2;
             ChkAs3.IsChecked = s.ShowAs3;

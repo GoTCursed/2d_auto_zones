@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using LiraSlabZones.Core;
+using Newtonsoft.Json;
 
 namespace LiraSlabZones.Revit2023.UI
 {
@@ -15,7 +16,11 @@ namespace LiraSlabZones.Revit2023.UI
     /// </summary>
     public sealed class PreviewViewport : FrameworkElement
     {
+        private const int MaxUndoActions = 50;
+        private enum ResizeEdge { None, Left, Right, Bottom, Top }
         private AnalysisResult? _result;
+        private readonly List<string> _undo = new();
+        private string? _pendingUndo;
         private AnalysisSettings _settings = new AnalysisSettings();
         private bool _showMesh = true;
         private bool _showIso;
@@ -58,6 +63,8 @@ namespace LiraSlabZones.Revit2023.UI
         private AdditionalZone? _mergeZone;
         private AdditionalZone? _gapMovingZone;
         private Point3? _editStart;
+        private ResizeEdge _resizeEdge;
+        private (double MinX, double MaxX, double MinY, double MaxY) _resizeBounds;
         public event Action<AdditionalZone>? ZoneSelected;
         public event Action? ZonesEdited;
         public event Action<string>? StatusChanged;
@@ -67,6 +74,46 @@ namespace LiraSlabZones.Revit2023.UI
         private static readonly Pen MeshPen = FreezePen(Color.FromArgb(80, 55, 65, 81), 0.4);
 
         public double Zoom => _zoom;
+        public bool UndoLastEdit()
+        {
+            if (_result == null || _undo.Count == 0) return false;
+            var last = _undo[_undo.Count - 1];
+            _undo.RemoveAt(_undo.Count - 1);
+            _result.Zones = JsonConvert.DeserializeObject<List<AdditionalZone>>(last) ?? new List<AdditionalZone>();
+            _pendingUndo = null;
+            _editStart = null;
+            _editZone = null;
+            _mergeZone = null;
+            _gapMovingZone = null;
+            CommitEdits();
+            RaiseStatus($"Отменено действие · осталось {_undo.Count} из {MaxUndoActions}");
+            return true;
+        }
+
+        private void BeginEdit() => _pendingUndo = _result == null ? null : JsonConvert.SerializeObject(_result.Zones);
+        private AdditionalZone? SelectedZone => _result?.Zones.FirstOrDefault(z => z.ZoneId == _selectedZoneId);
+
+        public bool ResizeSelectedZone(double lengthMm, double widthMm)
+        {
+            var zone = SelectedZone;
+            if (zone == null || _result == null ||
+                lengthMm <= 50 || widthMm <= 50) return false;
+            BeginEdit();
+            if (!ZoneEditor.ResizeByDimensions(zone, lengthMm, widthMm, _result.Outline))
+            { _pendingUndo = null; return false; }
+            CommitEdits(zone);
+            return true;
+        }
+
+        public bool SetSelectedFamily(ZoneFamilyKind kind, string name)
+        {
+            var zone = SelectedZone;
+            if (zone == null || string.IsNullOrWhiteSpace(name)) return false;
+            BeginEdit();
+            ZoneEditor.SetFamily(zone, kind, name);
+            CommitEdits(zone);
+            return true;
+        }
 
         public bool SetSelectedDiameter(int diameterMm)
         {
@@ -81,7 +128,18 @@ namespace LiraSlabZones.Revit2023.UI
                 RaiseStatus($"Ø{diameterMm} меньше фонового Ø{background}");
                 return false;
             }
+            BeginEdit();
             ZoneEditor.SetDiameter(zone, diameterMm);
+            CommitEdits(zone);
+            return true;
+        }
+
+        public bool SetSelectedStep(int stepMm)
+        {
+            var zone = SelectedZone;
+            if (zone == null || (stepMm != 100 && stepMm != 200)) return false;
+            BeginEdit();
+            ZoneEditor.SetStep(zone, stepMm);
             CommitEdits(zone);
             return true;
         }
@@ -91,6 +149,7 @@ namespace LiraSlabZones.Revit2023.UI
             _editMode = mode;
             _editZone = null;
             _editStart = null;
+            _resizeEdge = ResizeEdge.None;
             if (mode != ZoneEditMode.Merge) _mergeZone = null;
             if (mode != ZoneEditMode.CreateGap) _gapMovingZone = null;
             Cursor = mode == ZoneEditMode.Move ? Cursors.SizeAll :
@@ -100,6 +159,7 @@ namespace LiraSlabZones.Revit2023.UI
 
         public void SetData(AnalysisResult? result, AnalysisSettings settings, bool showMesh, bool showIso, bool showAxes = false, bool fitView = true)
         {
+            if (!ReferenceEquals(_result, result)) { _undo.Clear(); _pendingUndo = null; }
             _result = result;
             _settings = settings;
             _showMesh = showMesh;
@@ -373,6 +433,22 @@ namespace LiraSlabZones.Revit2023.UI
             // подпись отметки в экранных координатах (не масштабируется с моделью)
             DrawElevationBadge(dc);
             DrawDiameterLegend(dc);
+            DrawDirectionAxes(dc);
+        }
+
+        private void DrawDirectionAxes(DrawingContext dc)
+        {
+            var origin = new Point(35, ActualHeight - 35);
+            var pen = new Pen(Brushes.DarkSlateGray, 2);
+            dc.DrawLine(pen, origin, new Point(origin.X + 32, origin.Y));
+            dc.DrawLine(pen, origin, new Point(origin.X, origin.Y - 32));
+            var face = new Typeface("Segoe UI");
+            dc.DrawText(new FormattedText("X", System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight, face, 13, Brushes.DarkSlateGray, 1),
+                new Point(origin.X + 35, origin.Y - 10));
+            dc.DrawText(new FormattedText("Y", System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight, face, 13, Brushes.DarkSlateGray, 1),
+                new Point(origin.X - 5, origin.Y - 51));
         }
 
         private void DrawDiameterLegend(DrawingContext dc)
@@ -605,6 +681,21 @@ namespace LiraSlabZones.Revit2023.UI
             else
             {
                 var m = ScreenToModel(e.GetPosition(this));
+                if (_resizeEdge != ResizeEdge.None && _editZone != null && _result != null)
+                {
+                    if (ResizeDraggedEdge(_editZone, m))
+                    {
+                        RebuildZoneGeometryCache();
+                        InvalidateVisual();
+                    }
+                }
+                else if (_editMode == ZoneEditMode.Select || _editMode == ZoneEditMode.Resize)
+                {
+                    var edge = HitResizeEdge(m);
+                    Cursor = edge.Edge == ResizeEdge.Left || edge.Edge == ResizeEdge.Right
+                        ? Cursors.SizeWE : edge.Edge == ResizeEdge.Top || edge.Edge == ResizeEdge.Bottom
+                            ? Cursors.SizeNS : Cursors.Arrow;
+                }
                 var edit = _editStart != null ? $" | {_editMode}: отпустите ЛКМ" : "";
                 RaiseStatus($"X={m.X:F2} Y={m.Y:F2} м | зум {_zoom * 100:0}%{edit} | колесо зум, ПКМ пан");
             }
@@ -614,11 +705,31 @@ namespace LiraSlabZones.Revit2023.UI
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
         {
             var m = ScreenToModel(e.GetPosition(this));
+            if (_result != null && (_editMode == ZoneEditMode.Select || _editMode == ZoneEditMode.Resize))
+            {
+                var edge = HitResizeEdge(m);
+                if (edge.Zone != null && edge.Edge != ResizeEdge.None)
+                {
+                    _editZone = edge.Zone;
+                    _resizeEdge = edge.Edge;
+                    _resizeBounds = (edge.Zone.Contour.Min(p => p.X), edge.Zone.Contour.Max(p => p.X),
+                        edge.Zone.Contour.Min(p => p.Y), edge.Zone.Contour.Max(p => p.Y));
+                    _editStart = m;
+                    _selectedZoneId = edge.Zone.ZoneId;
+                    BeginEdit();
+                    CaptureMouse();
+                    ZoneSelected?.Invoke(edge.Zone);
+                    e.Handled = true;
+                    base.OnMouseLeftButtonDown(e);
+                    return;
+                }
+            }
             var hit = HitZone(m);
             if (_result != null && _editMode != ZoneEditMode.Select)
             {
                 if (_editMode == ZoneEditMode.Delete && hit != null)
                 {
+                    BeginEdit();
                     _result.Zones.Remove(hit);
                     CommitEdits();
                 }
@@ -629,6 +740,7 @@ namespace LiraSlabZones.Revit2023.UI
                         hit.Direction == ZoneDirection.X, _result.Outline);
                     if (pieces.Count == 2)
                     {
+                        BeginEdit();
                         _result.Zones.Remove(hit);
                         _result.Zones.AddRange(pieces);
                         CommitEdits();
@@ -649,6 +761,7 @@ namespace LiraSlabZones.Revit2023.UI
                         var merged = ZoneEditor.Merge(_mergeZone, hit, _result.Outline);
                         if (merged != null)
                         {
+                            BeginEdit();
                             _result.Zones.Remove(_mergeZone);
                             _result.Zones.Remove(hit);
                             _result.Zones.Add(merged);
@@ -666,8 +779,17 @@ namespace LiraSlabZones.Revit2023.UI
                     var maxY = hit.Contour.Max(p => p.Y);
                     var distanceToVertical = Math.Min(Math.Abs(m.X - minX), Math.Abs(m.X - maxX));
                     var distanceToHorizontal = Math.Min(Math.Abs(m.Y - minY), Math.Abs(m.Y - maxY));
-                    ZoneEditor.SetDirectionPerpendicularToEdge(hit, distanceToVertical <= distanceToHorizontal);
-                    CommitEdits(hit);
+                    var pieces = ZoneEditor.SplitPerpendicularToEdge(
+                        hit, m.X, m.Y, distanceToVertical <= distanceToHorizontal, _result.Outline);
+                    if (pieces.Count == 2)
+                    {
+                        BeginEdit();
+                        var index = _result.Zones.IndexOf(hit);
+                        _result.Zones.RemoveAt(index);
+                        _result.Zones.InsertRange(index, pieces);
+                        CommitEdits(pieces[0]);
+                    }
+                    else RaiseStatus("Разрез должен проходить внутри зоны, на расстоянии от края");
                 }
                 else if (_editMode == ZoneEditMode.CreateGap && hit != null)
                 {
@@ -683,16 +805,21 @@ namespace LiraSlabZones.Revit2023.UI
                     {
                         var moving = _gapMovingZone;
                         _gapMovingZone = null;
+                        BeginEdit();
                         if (ZoneEditor.CreateGap(moving, hit, _result.Outline))
                             CommitEdits(moving);
                         else
+                        {
+                            _pendingUndo = null;
                             RaiseStatus("Не удалось создать зазор внутри контура плиты");
+                        }
                     }
                 }
-                else if (_editMode == ZoneEditMode.Create || hit != null)
+                else if (_editMode == ZoneEditMode.Create || (_editMode == ZoneEditMode.Move && hit != null))
                 {
                     _editZone = hit;
                     _editStart = m;
+                    BeginEdit();
                     CaptureMouse();
                 }
                 e.Handled = true;
@@ -720,12 +847,11 @@ namespace LiraSlabZones.Revit2023.UI
             {
                 var end = ScreenToModel(e.GetPosition(this));
                 var start = _editStart;
-                if (_editMode == ZoneEditMode.Move && _editZone != null)
+                var resizedZone = _resizeEdge != ResizeEdge.None ? _editZone : null;
+                if (resizedZone != null)
+                    ResizeDraggedEdge(resizedZone, end);
+                else if (_editMode == ZoneEditMode.Move && _editZone != null)
                     ZoneEditor.Move(_editZone, end.X - start.X, end.Y - start.Y, _result.Outline);
-                else if (_editMode == ZoneEditMode.Resize && _editZone != null)
-                    ZoneEditor.Resize(_editZone,
-                        Math.Min(start.X, end.X), Math.Max(start.X, end.X),
-                        Math.Min(start.Y, end.Y), Math.Max(start.Y, end.Y), _result.Outline);
                 else if (_editMode == ZoneEditMode.Create)
                 {
                     var template = _editZone ?? _result.Zones.FirstOrDefault();
@@ -739,8 +865,9 @@ namespace LiraSlabZones.Revit2023.UI
                 }
                 _editStart = null;
                 _editZone = null;
+                _resizeEdge = ResizeEdge.None;
                 ReleaseMouseCapture();
-                CommitEdits();
+                CommitEdits(resizedZone);
                 e.Handled = true;
             }
             base.OnMouseLeftButtonUp(e);
@@ -753,9 +880,79 @@ namespace LiraSlabZones.Revit2023.UI
             return null;
         }
 
+        private (AdditionalZone? Zone, ResizeEdge Edge) HitResizeEdge(Point3 point)
+        {
+            var tolerance = 8.0 / Math.Max(1e-6, _fitScale * _zoom);
+            var transformed = Tx(point);
+            for (var i = _drawZones.Count - 1; i >= 0; i--)
+            {
+                var shape = _drawZones[i];
+                var z = shape.Zone;
+                if (z.Contour.Count < 3 || transformed.X < shape.MinX - tolerance ||
+                    transformed.X > shape.MaxX + tolerance || transformed.Y < shape.MinY - tolerance ||
+                    transformed.Y > shape.MaxY + tolerance) continue;
+                var minX = z.Contour.Min(p => p.X);
+                var maxX = z.Contour.Max(p => p.X);
+                var minY = z.Contour.Min(p => p.Y);
+                var maxY = z.Contour.Max(p => p.Y);
+                var nearest = new[]
+                {
+                    (Distance: Math.Abs(point.X - minX), Edge: ResizeEdge.Left),
+                    (Distance: Math.Abs(point.X - maxX), Edge: ResizeEdge.Right),
+                    (Distance: Math.Abs(point.Y - minY), Edge: ResizeEdge.Bottom),
+                    (Distance: Math.Abs(point.Y - maxY), Edge: ResizeEdge.Top)
+                }.Where(item => item.Edge == ResizeEdge.Left || item.Edge == ResizeEdge.Right
+                    ? point.Y >= minY - tolerance && point.Y <= maxY + tolerance
+                    : point.X >= minX - tolerance && point.X <= maxX + tolerance)
+                 .OrderBy(item => item.Distance).FirstOrDefault();
+                if (nearest.Distance <= tolerance && nearest.Edge != ResizeEdge.None)
+                    return (z, nearest.Edge);
+            }
+            return (null, ResizeEdge.None);
+        }
+
+        private bool ResizeDraggedEdge(AdditionalZone zone, Point3 point)
+        {
+            if (_result == null) return false;
+            var (minX, maxX, minY, maxY) = _resizeBounds;
+            switch (_resizeEdge)
+            {
+                case ResizeEdge.Left: minX = point.X; break;
+                case ResizeEdge.Right: maxX = point.X; break;
+                case ResizeEdge.Bottom: minY = point.Y; break;
+                case ResizeEdge.Top: maxY = point.Y; break;
+                default: return false;
+            }
+            if (maxX - minX <= 0.05 || maxY - minY <= 0.05) return false;
+            return ZoneEditor.Resize(zone, minX, maxX, minY, maxY, _result.Outline);
+        }
+
         private void CommitEdits(AdditionalZone? keepSelected = null)
         {
             if (_result == null) return;
+            if (_pendingUndo != null)
+            {
+                var before = JsonConvert.DeserializeObject<List<AdditionalZone>>(_pendingUndo) ?? new List<AdditionalZone>();
+                var existingContours = new HashSet<string>(before
+                    .Where(z => ZoneEditor.IntersectsOpening(z, _result.Openings))
+                    .Select(z => JsonConvert.SerializeObject(z.Contour)));
+                if (_result.Zones.Any(z => ZoneEditor.IntersectsOpening(z, _result.Openings) &&
+                    !existingContours.Contains(JsonConvert.SerializeObject(z.Contour))))
+                {
+                    _result.Zones = before;
+                    _pendingUndo = null;
+                    RebuildZoneGeometryCache();
+                    InvalidateVisual();
+                    RaiseStatus("Зона пересекает отверстие плиты: изменение отменено");
+                    return;
+                }
+                if (_pendingUndo != JsonConvert.SerializeObject(_result.Zones))
+                {
+                    _undo.Add(_pendingUndo);
+                    if (_undo.Count > MaxUndoActions) _undo.RemoveAt(0);
+                }
+                _pendingUndo = null;
+            }
             for (var i = 0; i < _result.Zones.Count; i++) _result.Zones[i].ZoneId = i + 1;
             RebuildZoneGeometryCache();
             _selectedZoneId = keepSelected?.ZoneId;

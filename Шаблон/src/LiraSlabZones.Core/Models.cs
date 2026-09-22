@@ -244,6 +244,7 @@ namespace LiraSlabZones.Core
     /// </summary>
     public sealed class AnalysisSettings
     {
+        public List<int> ExcludedZoneDiametersMm { get; set; } = new List<int>();
         public double AsMainCm2PerM { get; set; } = 0;
         public double AsMainAs1 { get; set; } = 0;
         public double AsMainAs2 { get; set; } = 0;

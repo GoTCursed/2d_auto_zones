@@ -933,18 +933,17 @@ namespace LiraSlabZones.Revit2023.UI
             if (_pendingUndo != null)
             {
                 var before = JsonConvert.DeserializeObject<List<AdditionalZone>>(_pendingUndo) ?? new List<AdditionalZone>();
-                var existingContours = new HashSet<string>(before
-                    .Where(z => ZoneEditor.IntersectsOpening(z, _result.Openings))
-                    .Select(z => JsonConvert.SerializeObject(z.Contour)));
-                if (_result.Zones.Any(z => ZoneEditor.IntersectsOpening(z, _result.Openings) &&
-                    !existingContours.Contains(JsonConvert.SerializeObject(z.Contour))))
+                var unchanged = new HashSet<string>(before.Select(JsonConvert.SerializeObject));
+                for (var i = _result.Zones.Count - 1; i >= 0; i--)
                 {
-                    _result.Zones = before;
-                    _pendingUndo = null;
-                    RebuildZoneGeometryCache();
-                    InvalidateVisual();
-                    RaiseStatus("Зона пересекает отверстие плиты: изменение отменено");
-                    return;
+                    var zone = _result.Zones[i];
+                    if (unchanged.Contains(JsonConvert.SerializeObject(zone)) ||
+                        !ZoneEditor.IntersectsOpening(zone, _result.Openings)) continue;
+                    var parts = ZoneEditor.SplitAtOpenings(
+                        zone, _result.Openings, _settings, _result.Plates);
+                    _result.Zones.RemoveAt(i);
+                    _result.Zones.InsertRange(i, parts);
+                    if (ReferenceEquals(keepSelected, zone)) keepSelected = parts.FirstOrDefault();
                 }
                 if (_pendingUndo != JsonConvert.SerializeObject(_result.Zones))
                 {

@@ -1,12 +1,10 @@
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\DefaultSettings.cfg
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\LiraSlabZones.Revit2022.dll
-C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\LiraSlabZones.Revit2022.pdb
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\Clipper2Lib.dll
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\Newtonsoft.Json.dll
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\LiraSlabZones.Core.dll
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\LiraSapr.Interop.dll
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\LiraResAPI.Interop.dll
-C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\bin\x64\Release\net48\LiraSlabZones.Core.pdb
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.csproj.AssemblyReference.cache
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\ZonePreviewWindow.g.cs
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\GeneratedInternalTypeHelper.g.cs
@@ -18,7 +16,5 @@ C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraS
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.AssemblyInfoInputs.cache
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.AssemblyInfo.cs
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.csproj.CoreCompileInputs.cache
-C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.sourcelink.json
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlab.153672F0.Up2Date
 C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.dll
-C:\Users\Filippov_G\Pictures\2DSaveliyZones\2d_auto_zones\Шаблон\src\LiraSlabZones.Revit2022\obj\x64\Release\net48\LiraSlabZones.Revit2022.pdb

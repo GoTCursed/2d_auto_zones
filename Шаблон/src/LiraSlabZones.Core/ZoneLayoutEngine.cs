@@ -722,7 +722,7 @@ namespace LiraSlabZones.Core
             FitZonesInsideSlab(merged, outline, settings.SlabEdgeInsetMm);
             RefreshZoneDimensions(merged);
             ApplyFinalEdgeFamilies(merged, settings, outline);
-            SplitOverlongStraightZones(merged, mosaic, outline, settings.SlabEdgeInsetMm);
+            SplitOverlongZones(merged, mosaic, outline, settings.SlabEdgeInsetMm);
             for (var i = 0; i < merged.Count; i++)
                 merged[i].ZoneId = i + 1;
             return merged;
@@ -1817,35 +1817,41 @@ namespace LiraSlabZones.Core
             }
         }
 
-        private static void SplitOverlongStraightZones(
+        private static void SplitOverlongZones(
             List<AdditionalZone> zones, MosaicGrid mosaic, IList<Point3>? outline, double slabEdgeInsetMm)
         {
             const int maxLengthMm = 11700;
             for (var index = zones.Count - 1; index >= 0; index--)
             {
                 var source = zones[index];
-                if (source.FamilyKind != ZoneFamilyKind.Straight || source.Contour.Count < 3)
+                if (source.Contour.Count < 3)
                     continue;
+                var bent = source.FamilyKind != ZoneFamilyKind.Straight;
+                var legCount = source.FamilyKind is ZoneFamilyKind.PEqual or ZoneFamilyKind.PDiff ? 2 : 1;
+                var maxPlanMm = maxLengthMm - (bent ? legCount * Math.Max(0, source.VerticalLegMm) : 0);
+                if (maxPlanMm <= 0) continue;
                 var minX = source.Contour.Min(p => p.X);
                 var maxX = source.Contour.Max(p => p.X);
                 var minY = source.Contour.Min(p => p.Y);
                 var maxY = source.Contour.Max(p => p.Y);
                 var start = UnitConversion.MetersToMm(source.Direction == ZoneDirection.X ? minX : minY);
                 var end = UnitConversion.MetersToMm(source.Direction == ZoneDirection.X ? maxX : maxY);
-                if (end - start <= maxLengthMm + 1) continue;
+                if (end - start <= maxPlanMm + 1 && source.LengthMm <= maxLengthMm + 1) continue;
 
                 var lapMm = 2 * RebarTables.LapLenMm(source.ConcreteClass, source.DiameterMm);
-                if (lapMm >= maxLengthMm) continue;
+                if (lapMm >= maxPlanMm) continue;
                 var pieces = new List<(double Start, double End, int Length)>();
                 var cursor = start;
-                while (end - cursor > maxLengthMm + 1)
+                while (end - cursor > maxPlanMm + 1)
                 {
-                    pieces.Add((cursor, cursor + maxLengthMm, maxLengthMm));
-                    cursor += maxLengthMm - lapMm;
+                    pieces.Add((cursor, cursor + maxPlanMm, maxLengthMm));
+                    cursor += maxPlanMm - lapMm;
                 }
-                var lastLength = RebarTables.PickFamilyLength(end - cursor);
-                if (lastLength > maxLengthMm) continue;
-                pieces.Add((end - lastLength, end, lastLength));
+                var lastPlanMm = bent ? end - cursor : RebarTables.PickFamilyLength(end - cursor);
+                if (lastPlanMm > maxPlanMm) continue;
+                pieces.Add((end - lastPlanMm, end, bent
+                    ? RebarTables.BentBarTotalLengthMm(lastPlanMm, source.VerticalLegMm, source.FamilyKind)
+                    : (int)lastPlanMm));
 
                 var replacements = new List<AdditionalZone>();
                 foreach (var piece in pieces)
@@ -1859,14 +1865,18 @@ namespace LiraSlabZones.Core
                     var pieceMinY = source.Direction == ZoneDirection.Y ? a : minY;
                     var pieceMaxY = source.Direction == ZoneDirection.Y ? b : maxY;
                     if (!MeshBoundary.ClipRectToSlab(ref pieceMinX, ref pieceMaxX,
-                            ref pieceMinY, ref pieceMaxY, outline, slabEdgeInsetMm))
+                            ref pieceMinY, ref pieceMaxY, outline, 0))
                         break;
                     var clippedLengthMm = UnitConversion.MetersToMm(source.Direction == ZoneDirection.X
                         ? pieceMaxX - pieceMinX : pieceMaxY - pieceMinY);
-                    if (Math.Abs(clippedLengthMm - piece.Length) > 1) break;
+                    var plannedLengthMm = piece.End - piece.Start;
+                    if (Math.Abs(clippedLengthMm - plannedLengthMm) > 1) break;
                     SetZoneBounds(zone,
                         pieceMinX, pieceMaxX, pieceMinY, pieceMaxY);
-                    zone.LengthMm = UnitConversion.MetersToMm(zone.LengthM);
+                    zone.LengthMm = bent
+                        ? RebarTables.BentBarTotalLengthMm(clippedLengthMm, zone.VerticalLegMm, zone.FamilyKind)
+                        : clippedLengthMm;
+                    if (zone.LengthMm > maxLengthMm + 1) break;
                     zone.NodeIds = source.NodeIds.Where(id =>
                         mosaic.PlateCentroids.TryGetValue(id, out var point) &&
                         point.X >= pieceMinX - 1e-6 && point.X <= pieceMaxX + 1e-6 &&
@@ -1874,7 +1884,11 @@ namespace LiraSlabZones.Core
                     zone.ElementId = zone.NodeIds.FirstOrDefault();
                     replacements.Add(zone);
                 }
-                var preservesIds = source.NodeIds.All(id => replacements.Any(z => z.NodeIds.Contains(id)));
+                var preservesIds = source.NodeIds.All(id =>
+                    !mosaic.PlateCentroids.TryGetValue(id, out var point) ||
+                    point.X < minX - 1e-6 || point.X > maxX + 1e-6 ||
+                    point.Y < minY - 1e-6 || point.Y > maxY + 1e-6 ||
+                    replacements.Any(z => z.NodeIds.Contains(id)));
                 var validNeighbors = replacements.All(candidate => zones.Where(other =>
                     !ReferenceEquals(other, source) && other.Layer == candidate.Layer &&
                     other.Contour.Count >= 3).All(other =>
@@ -1896,7 +1910,11 @@ namespace LiraSlabZones.Core
                 {
                     source.IsValid = false;
                     source.StatusColor = "warn";
-                    source.Comment = "превышение 11700 мм: разделение конфликтует с контуром или соседними зонами";
+                    source.Comment = replacements.Count != pieces.Count
+                        ? "превышение 11700 мм: разрез выходит за контур плиты"
+                        : !preservesIds
+                            ? "превышение 11700 мм: разрез не сохраняет покрытие КЭ"
+                            : "превышение 11700 мм: разрез конфликтует с соседней зоной";
                     continue;
                 }
                 zones.RemoveAt(index);

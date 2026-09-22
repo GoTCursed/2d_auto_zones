@@ -138,6 +138,32 @@ namespace LiraSlabZones.Core
                 detectedOpenings.AddRange(openings.Where(op => !detectedOpenings.Any(existing =>
                     Math.Abs(existing.MinXM - op.MinXM) < 0.001 && Math.Abs(existing.MinYM - op.MinYM) < 0.001)));
             var zones = ZoneLayoutEngine.Layout(levelPlates, settings, openings: detectedOpenings, outline: outline, axes: axes);
+            if (settings.ApplyHoleRules && detectedOpenings.Count > 0)
+            {
+                for (var i = zones.Count - 1; i >= 0; i--)
+                {
+                    var zone = zones[i];
+                    if (!ZoneEditor.IntersectsOpening(zone, detectedOpenings)) continue;
+                    var parts = ZoneEditor.SplitAtOpenings(zone, detectedOpenings, settings, levelPlates)
+                        .Where(part => part.NodeIds.Count > 0).ToList();
+                    var conflicts = parts.Where((part, partIndex) =>
+                        parts.Skip(partIndex + 1).Any(other => ZoneEditor.HasPlacementConflict(part, other)) ||
+                        zones.Where((other, otherIndex) => otherIndex != i)
+                            .Any(other => ZoneEditor.HasPlacementConflict(part, other))).Any();
+                    if (parts.Count == 0 || zone.NodeIds.Except(parts.SelectMany(part => part.NodeIds)).Any() ||
+                        conflicts ||
+                        parts.Any(part => part.FamilyKind == ZoneFamilyKind.Straight &&
+                            settings.MinZoneWidthM > 0 && part.WidthM + 1e-6 < settings.MinZoneWidthM))
+                    {
+                        zone.StatusColor = "warn";
+                        zone.Comment = "отверстие: разделение не сохранило покрытие КЭ";
+                        continue;
+                    }
+                    zones.RemoveAt(i);
+                    zones.InsertRange(i, parts);
+                }
+                for (var i = 0; i < zones.Count; i++) zones[i].ZoneId = i + 1;
+            }
             var stats = ComputeStats(zones, settings, outline, levelPlates);
 
             return new AnalysisResult

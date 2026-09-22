@@ -130,6 +130,18 @@ namespace LiraSlabZones.Core
             return CeilToStep(Math.Max(0, planLengthMm) + legCount * Math.Max(0, verticalLegMm), 10);
         }
 
+        public static bool ExceedsMaxBarLength(AdditionalZone zone)
+        {
+            if (zone.Contour == null || zone.Contour.Count < 3) return false;
+            var planMm = UnitConversion.MetersToMm(zone.Direction == ZoneDirection.X
+                ? zone.Contour.Max(p => p.X) - zone.Contour.Min(p => p.X)
+                : zone.Contour.Max(p => p.Y) - zone.Contour.Min(p => p.Y));
+            var totalMm = zone.FamilyKind == ZoneFamilyKind.Straight
+                ? planMm
+                : BentBarTotalLengthMm(planMm, zone.VerticalLegMm, zone.FamilyKind);
+            return totalMm > 11701;
+        }
+
         /// <summary>Максимальная длина SUM-3, не превышающая доступный габарит (подрезка краем плиты).</summary>
         public static int PickFamilyLengthFit(double availableLenMm)
         {

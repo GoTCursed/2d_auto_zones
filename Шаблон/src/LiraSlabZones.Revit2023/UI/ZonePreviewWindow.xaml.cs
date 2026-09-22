@@ -77,6 +77,7 @@ namespace LiraSlabZones.Revit2023.UI
                 {
                     if (_result == null) return;
                     TxtTitle.Text = $"{_result.DocumentName} · Z = {_result.ElevationZM:F3} м · зон: {_result.Zones.Count}";
+                    RefreshStats();
                     Log($"Зоны отредактированы: {_result.Zones.Count}", "ok");
                 };
             };
@@ -932,6 +933,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ? $"Z = {_result.ElevationZM:F3} м"
                 : _result.ElevationLabel;
             var mode = _result.Settings.AutoLayout ? "Автораскладка" : "По КЭ";
+            var overlong = _result.Zones.Count(RebarTables.ExceedsMaxBarLength);
             TxtStats.Text =
                 $"Отметка: {elev}\n" +
                 $"Режим: {mode} / {st.DetailLevelLabel}\n" +
@@ -945,6 +947,7 @@ namespace LiraSlabZones.Revit2023.UI
                 $"Масса стали ≈ {st.TotalSteelMassKg:F1} кг\n" +
                 $"Расход ≈ {st.SteelKgPerM3:F1} кг/м³\n" +
                 $"Контур: {_result.Outline.Count} вершин\n" +
+                (overlong > 0 ? $"Превышение 11700 мм: {overlong} (размещение заблокировано)\n" : "") +
                 $"⚠ {st.WarnCount}   ✕ {st.ErrorCount}";
             TxtDetail.Text = string.IsNullOrWhiteSpace(st.DetailLevelLabel)
                 ? DetailOptimizer.LabelWithMass(_result.Settings.DetailSlider, st.SteelKgPerM3)

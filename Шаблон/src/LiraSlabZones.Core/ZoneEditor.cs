@@ -113,6 +113,29 @@ namespace LiraSlabZones.Core
                    (overlapX > 1e-6 && gapY + 1e-6 >= required);
         }
 
+        public static bool HasPlacementConflict(AdditionalZone first, AdditionalZone second)
+        {
+            if (first.Layer != second.Layer || first.Contour.Count < 3 || second.Contour.Count < 3)
+                return false;
+            var a = Bounds(first.Contour);
+            var b = Bounds(second.Contour);
+            var overlapX = Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX);
+            var overlapY = Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+            if (overlapX > 1e-6 && overlapY > 1e-6)
+            {
+                var allowedMm = RebarTables.AllowedZoneOverlapMm(first, second);
+                var longitudinalMm = UnitConversion.MetersToMm(first.Direction == ZoneDirection.X
+                    ? overlapX : overlapY);
+                return allowedMm <= 0 || longitudinalMm + 1 < allowedMm;
+            }
+            var requiredGap = Math.Min(first.BarStepMm, second.BarStepMm) / 1000.0;
+            var gapX = Math.Max(0, Math.Max(a.MinX, b.MinX) - Math.Min(a.MaxX, b.MaxX));
+            var gapY = Math.Max(0, Math.Max(a.MinY, b.MinY) - Math.Min(a.MaxY, b.MaxY));
+            return first.Direction == ZoneDirection.X
+                ? overlapX > 1e-6 && gapY < requiredGap - 1e-6
+                : overlapY > 1e-6 && gapX < requiredGap - 1e-6;
+        }
+
         private static (double MinX, double MaxX, double MinY, double MaxY) Bounds(IList<Point3> contour) =>
             (contour.Min(p => p.X), contour.Max(p => p.X),
              contour.Min(p => p.Y), contour.Max(p => p.Y));
@@ -168,6 +191,61 @@ namespace LiraSlabZones.Core
                     AddPiece(left, right, top, bounds.MaxY);
                 }
                 parts = next;
+            }
+            return parts;
+        }
+
+        public static List<AdditionalZone> SplitAtOpenings(
+            AdditionalZone zone, IList<OpeningInfo> openings, AnalysisSettings settings,
+            IList<LiraPlateElement>? plates = null)
+        {
+            var relevant = openings.Where(op => !HoleBentRules.ShouldIgnoreOpening(
+                    op, zone.Direction, settings.HoleIgnorePerpMm))
+                .Where(op => HoleBentRules.RectIntersects(op,
+                    zone.Contour.Min(p => p.X), zone.Contour.Max(p => p.X),
+                    zone.Contour.Min(p => p.Y), zone.Contour.Max(p => p.Y)))
+                .ToList();
+            if (relevant.Count == 0 || !IntersectsOpening(zone, relevant))
+                return new List<AdditionalZone> { zone };
+
+            var parts = ExcludeOpenings(zone, relevant);
+            foreach (var part in parts)
+            {
+                var bounds = Bounds(part.Contour);
+                var endsAtOpening = relevant.Any(op => zone.Direction == ZoneDirection.X
+                    ? Math.Min(bounds.MaxY, op.MaxYM) - Math.Max(bounds.MinY, op.MinYM) > 1e-6 &&
+                      (Math.Abs(bounds.MaxX - op.MinXM) < 1e-5 ||
+                       Math.Abs(bounds.MinX - op.MaxXM) < 1e-5)
+                    : Math.Min(bounds.MaxX, op.MaxXM) - Math.Max(bounds.MinX, op.MinXM) > 1e-6 &&
+                      (Math.Abs(bounds.MaxY - op.MinYM) < 1e-5 ||
+                       Math.Abs(bounds.MinY - op.MaxYM) < 1e-5));
+                if (endsAtOpening && settings.ApplyBentRules)
+                {
+                    part.VerticalLegMm = HoleBentRules.VerticalLegAvailableMm(
+                        settings.SlabThicknessMm, settings.CoverTopMm,
+                        settings.CoverBottomMm, part.DiameterMm);
+                    part.FamilyKind = HoleBentRules.ChooseBentFamily(part.VerticalLegMm, part.DiameterMm);
+                    part.FamilyFileName = settings.GetFamilyName(part.FamilyKind);
+                    part.CountBars = true;
+                    part.CountInSpec = false;
+                    part.Comment = "отверстие: гнутая деталь";
+                }
+                else if (zone.FamilyKind == ZoneFamilyKind.Straight)
+                {
+                    part.FamilyKind = ZoneFamilyKind.Straight;
+                    part.FamilyFileName = settings.GetFamilyName(ZoneFamilyKind.Straight);
+                    part.VerticalLegMm = 0;
+                    part.Comment = "обход отверстия: прямой стержень";
+                }
+                SetContour(part, part.Contour.ToList());
+                if (plates != null)
+                {
+                    part.NodeIds = plates.Where(plate => zone.NodeIds.Contains(plate.Id) &&
+                        plate.Centroid.X >= bounds.MinX - 1e-6 && plate.Centroid.X <= bounds.MaxX + 1e-6 &&
+                        plate.Centroid.Y >= bounds.MinY - 1e-6 && plate.Centroid.Y <= bounds.MaxY + 1e-6)
+                        .Select(plate => plate.Id).Distinct().ToList();
+                    part.ElementId = part.NodeIds.FirstOrDefault();
+                }
             }
             return parts;
         }
@@ -308,6 +386,16 @@ namespace LiraSlabZones.Core
             CountInSpec = source.CountInSpec,
             CountBars = source.CountBars,
             VerticalLegMm = source.VerticalLegMm,
+            RotationDeg = source.RotationDeg,
+            AlphaCoef = source.AlphaCoef,
+            Rebar = source.Rebar,
+            AxisNameX = source.AxisNameX,
+            AxisNameY = source.AxisNameY,
+            AxisPosXM = source.AxisPosXM,
+            AxisPosYM = source.AxisPosYM,
+            OffsetFromAxisXMm = source.OffsetFromAxisXMm,
+            OffsetFromAxisYMm = source.OffsetFromAxisYMm,
+            AxisTieLabel = source.AxisTieLabel,
             Comment = source.Comment,
             IsValid = source.IsValid,
             StatusColor = source.StatusColor

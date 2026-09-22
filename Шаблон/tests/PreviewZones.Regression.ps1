@@ -142,6 +142,63 @@ $detectedHoles = [LiraSlabZones.Core.SlabOpenings]::Detect($holePlates, $holeOut
 Assert ($detectedHoles.Count -eq 1) "Expected only the 2x2 FE opening, got $($detectedHoles.Count)."
 Assert ([Math]::Abs($detectedHoles[0].WidthM - 2) -lt 0.001 -and [Math]::Abs($detectedHoles[0].HeightM - 2) -lt 0.001) 'Opening dimensions are incorrect.'
 Write-Host 'PASS opening detection ignores 1x1 FE gaps and keeps 2x2 FE gaps'
+$openingSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$openingSettings.SlabThicknessMm = 200
+$openingSettings.CoverTopMm = 25
+$openingSettings.CoverBottomMm = 25
+$crossing = [LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 0.5, 5.5, 0.5, 5.5, $holeOutline)
+$holePieces = [LiraSlabZones.Core.ZoneEditor]::SplitAtOpenings(
+    $crossing, $detectedHoles, $openingSettings)
+Assert ($holePieces.Count -eq 4) 'Opening must split a crossing zone into four non-overlapping pieces.'
+Assert (($holePieces | Where-Object FamilyKind -eq ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Unaffected bar lanes must remain straight.'
+Assert (($holePieces | Where-Object FamilyKind -ne ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Bars ending at the opening must use bent families.'
+Assert (($holePieces | Where-Object { [LiraSlabZones.Core.ZoneEditor]::IntersectsOpening($_, $detectedHoles) }).Count -eq 0) 'A split piece still crosses the opening.'
+Write-Host 'PASS opening splits bent end pieces and straight bypass pieces'
+$holeResult = [LiraSlabZones.Core.AnalysisResult]::new()
+$holeResult.Settings = $openingSettings
+$holeResult.Outline = $holeOutline
+$holeResult.Openings = $detectedHoles
+$holeViewport = [LiraSlabZones.Revit2023.UI.PreviewViewport]::new()
+$holeViewport.SetData($holeResult, $openingSettings, $true, $false)
+$privateInstance = [Reflection.BindingFlags]'NonPublic,Instance'
+$holeViewport.GetType().GetMethod('BeginEdit', $privateInstance).Invoke($holeViewport, @()) | Out-Null
+$holeResult.Zones.Add([LiraSlabZones.Core.ZoneEditor]::Create($editTemplate, 0.5, 5.5, 0.5, 5.5, $holeOutline))
+$holeViewport.GetType().GetMethod('CommitEdits', $privateInstance).Invoke($holeViewport, @($null)) | Out-Null
+Assert ($holeResult.Zones.Count -eq 4) 'Preview rejected a zone crossing an opening instead of splitting it.'
+Assert ($holeViewport.UndoLastEdit() -and $holeResult.Zones.Count -eq 0) 'Undo did not restore the state before opening split.'
+Write-Host 'PASS preview splits a crossing zone and supports undo'
+$longZone = [LiraSlabZones.Core.AdditionalZone]::new()
+$longZone.Direction = [LiraSlabZones.Core.ZoneDirection]::Y
+$longZone.DiameterMm = 25
+$longZone.BarStepMm = 200
+$longZone.ConcreteClass = 'B40'
+$longZone.FamilyKind = [LiraSlabZones.Core.ZoneFamilyKind]::PEqual
+$longZone.VerticalLegMm = 150
+$longZone.LengthMm = 12960
+foreach ($point in @(@(0.5,0.5),@(1.5,0.5),@(1.5,13.16),@(0.5,13.16))) {
+    $longZone.Contour.Add([LiraSlabZones.Core.Point3]::new($point[0], $point[1], 0))
+}
+$longZone.NodeIds.Add(1); $longZone.NodeIds.Add(2); $longZone.NodeIds.Add(3)
+$longMosaic = [LiraSlabZones.Core.MosaicGrid]::new()
+$longMosaic.PlateCentroids[1] = [LiraSlabZones.Core.Point3]::new(1, 1, 0)
+$longMosaic.PlateCentroids[2] = [LiraSlabZones.Core.Point3]::new(1, 6, 0)
+$longMosaic.PlateCentroids[3] = [LiraSlabZones.Core.Point3]::new(1, 12, 0)
+$longOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+foreach ($point in @(@(0,0),@(4,0),@(4,14),@(0,14))) {
+    $longOutline.Add([LiraSlabZones.Core.Point3]::new($point[0], $point[1], 0))
+}
+$longZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$longZones.Add($longZone)
+Assert ([LiraSlabZones.Core.RebarTables]::ExceedsMaxBarLength($longZone)) 'Overlong bent bar was not detected before splitting.'
+$splitLong = [LiraSlabZones.Core.ZoneLayoutEngine].GetMethod('SplitOverlongZones', [Reflection.BindingFlags]'NonPublic,Static')
+$splitLong.Invoke($null, @($longZones, $longMosaic, $longOutline, 0.0)) | Out-Null
+Assert ($longZones.Count -eq 2) 'A 12660 mm bent zone was not divided.'
+Assert (($longZones | Where-Object LengthMm -gt 11700).Count -eq 0) 'A divided bent zone still exceeds 11700 mm.'
+Assert (($longZones | Where-Object { [LiraSlabZones.Core.RebarTables]::ExceedsMaxBarLength($_) }).Count -eq 0) 'Bent bar geometry still exceeds 11700 mm.'
+$overlap = ([Math]::Min(($longZones[0].Contour.Y | Measure-Object -Maximum).Maximum, ($longZones[1].Contour.Y | Measure-Object -Maximum).Maximum) -
+    [Math]::Max(($longZones[0].Contour.Y | Measure-Object -Minimum).Minimum, ($longZones[1].Contour.Y | Measure-Object -Minimum).Minimum)) * 1000
+Assert ($overlap + 1 -ge (2 * [LiraSlabZones.Core.RebarTables]::LapLenMm('B40', 25))) 'Bent splice has insufficient overlap.'
+Write-Host 'PASS 12660 mm bent zone splits into bars at most 11700 mm with tabular overlap'
 Assert ([LiraSlabZones.Core.RebarTables]::PickFamilyLength(3460) -eq 3900) '3460 mm was not rounded up to the 3900 mm family length.'
 Write-Host 'PASS family length rounds 3460 mm up to 3900 mm'
 Assert ([LiraSlabZones.Core.RebarTables]::BentBarTotalLengthMm(3460, 150, [LiraSlabZones.Core.ZoneFamilyKind]::L) -eq 3610) 'SUM-31 total length is wrong.'

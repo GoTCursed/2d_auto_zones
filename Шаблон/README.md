@@ -322,6 +322,12 @@ dotnet build src\LiraSlabZones.PreviewHost\LiraSlabZones.PreviewHost.csproj -c D
 powershell -ExecutionPolicy Bypass -File .\install-addin.ps1
 ```
 
+### MCP-поиск с короткими ответами
+
+На уровне корня репозитория лежат `.codex/config.toml` и `.cursor/mcp.json`: они подключают локальный `tools/code-search-mcp.cjs` как `lira-code-search`. Нужны Node.js, локальный Ollama с `nomic-embed-text` и Qdrant (`localhost:11434` и `localhost:6333`); внешние npm-пакеты не требуются. После открытия/доверия к проекту перезапустите клиент MCP, чтобы он перечитал конфигурацию. Первая индексация из каталога `Шаблон`: `node tools/vector-index.cjs`; повторный запуск векторизует только изменённые исходники. Проверка протокола и поиска: `node tools/test-code-search-mcp.cjs`.
+
+Для смыслового запроса вызывайте `semantic_search` с малым `limit`, затем `read_lines` для нужного диапазона. MCP строит **настоящие эмбеддинги** C#/XAML/PowerShell через Ollama и ищет их по косинусной близости в Qdrant; для русских запросов добавляются английские технические термины. `index_code` обновляет векторы после значимых правок. `find_code` оставлен для точных имён и литералов, `list_files` — для поиска пути. Ответы ограничены по объёму, `bin/obj/dist` исключены. Если службы недоступны, используйте узкий `rg`. RagCode в текущей установке не индексирует C#/XAML/PowerShell; Python/Markdown можно искать через него отдельно.
+
 Проверка импорта JSON, смены уровня и отрисовки зон (после Debug-сборки):
 
 ```powershell

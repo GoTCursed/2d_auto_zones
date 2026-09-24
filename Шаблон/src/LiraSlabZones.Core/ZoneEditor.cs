@@ -123,6 +123,8 @@ namespace LiraSlabZones.Core
             var overlapY = Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
             if (overlapX > 1e-6 && overlapY > 1e-6)
             {
+                if (IsLocalBentRecovery(first) || IsLocalBentRecovery(second))
+                    return false;
                 var allowedMm = RebarTables.AllowedZoneOverlapMm(first, second);
                 var longitudinalMm = UnitConversion.MetersToMm(first.Direction == ZoneDirection.X
                     ? overlapX : overlapY);
@@ -131,10 +133,86 @@ namespace LiraSlabZones.Core
             var requiredGap = Math.Min(first.BarStepMm, second.BarStepMm) / 1000.0;
             var gapX = Math.Max(0, Math.Max(a.MinX, b.MinX) - Math.Min(a.MaxX, b.MaxX));
             var gapY = Math.Max(0, Math.Max(a.MinY, b.MinY) - Math.Min(a.MaxY, b.MaxY));
-            return first.Direction == ZoneDirection.X
-                ? overlapX > 1e-6 && gapY < requiredGap - 1e-6
-                : overlapY > 1e-6 && gapX < requiredGap - 1e-6;
+            return (overlapY > 1e-6 && gapX < requiredGap - 1e-6) ||
+                   (overlapX > 1e-6 && gapY < requiredGap - 1e-6);
         }
+
+        public static void EnforceRequiredGaps(
+            IList<AdditionalZone> zones, IList<LiraPlateElement> plates)
+        {
+            var centroids = plates.ToDictionary(p => p.Id, p => p.Centroid);
+            foreach (var layerGroup in zones.GroupBy(z => z.Layer))
+            {
+                var layerZones = layerGroup.Where(z => z.Contour.Count >= 3).ToList();
+                for (var i = 0; i < layerZones.Count; i++)
+                for (var j = i + 1; j < layerZones.Count; j++)
+                {
+                    var first = layerZones[i];
+                    var second = layerZones[j];
+                    if (first.Direction != second.Direction) continue;
+                    var a = Bounds(first.Contour);
+                    var b = Bounds(second.Contour);
+                    var overlapX = Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX);
+                    var overlapY = Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+                    var required = UnitConversion.MmToMeters(
+                        Math.Min(first.BarStepMm, second.BarStepMm));
+
+                    if (overlapY > 1e-6)
+                    {
+                        var left = first.Placement.X <= second.Placement.X ? first : second;
+                        var right = ReferenceEquals(left, first) ? second : first;
+                        EnsureAxisGap(left, right, required, true, centroids);
+                    }
+                    else if (overlapX > 1e-6)
+                    {
+                        var bottom = first.Placement.Y <= second.Placement.Y ? first : second;
+                        var top = ReferenceEquals(bottom, first) ? second : first;
+                        EnsureAxisGap(bottom, top, required, false, centroids);
+                    }
+                }
+            }
+        }
+
+        private static void EnsureAxisGap(
+            AdditionalZone before, AdditionalZone after, double required, bool alongX,
+            IReadOnlyDictionary<int, Point3> centroids)
+        {
+            var a = Bounds(before.Contour);
+            var b = Bounds(after.Contour);
+            var current = alongX ? b.MinX - a.MaxX : b.MinY - a.MaxY;
+            var shortage = required - current;
+            if (shortage <= 1e-6) return;
+
+            const double coverToleranceM = 0.001;
+            var beforePoints = before.NodeIds.Where(centroids.ContainsKey).Select(id => centroids[id]).ToList();
+            var afterPoints = after.NodeIds.Where(centroids.ContainsKey).Select(id => centroids[id]).ToList();
+            if (beforePoints.Count == 0 || afterPoints.Count == 0) return;
+
+            var beforeLimit = alongX ? beforePoints.Max(p => p.X) : beforePoints.Max(p => p.Y);
+            var afterLimit = alongX ? afterPoints.Min(p => p.X) : afterPoints.Min(p => p.Y);
+            var trimAfter = Math.Min(shortage,
+                Math.Max(0, (alongX ? afterLimit - b.MinX : afterLimit - b.MinY) - coverToleranceM));
+            if (trimAfter > 0)
+            {
+                if (alongX) b.MinX += trimAfter; else b.MinY += trimAfter;
+                shortage -= trimAfter;
+            }
+            var trimBefore = Math.Min(shortage,
+                Math.Max(0, (alongX ? a.MaxX - beforeLimit : a.MaxY - beforeLimit) - coverToleranceM));
+            if (trimBefore > 0)
+            {
+                if (alongX) a.MaxX -= trimBefore; else a.MaxY -= trimBefore;
+                shortage -= trimBefore;
+            }
+            if (shortage > 1e-6) return;
+
+            SetContour(before, Rectangle(a.MinX, a.MaxX, a.MinY, a.MaxY, before.LevelZM));
+            SetContour(after, Rectangle(b.MinX, b.MaxX, b.MinY, b.MaxY, after.LevelZM));
+        }
+
+        private static bool IsLocalBentRecovery(AdditionalZone zone) =>
+            zone.FamilyKind != ZoneFamilyKind.Straight &&
+            zone.Comment?.IndexOf("локальная гнутая деталь", StringComparison.OrdinalIgnoreCase) >= 0;
 
         private static (double MinX, double MaxX, double MinY, double MaxY) Bounds(IList<Point3> contour) =>
             (contour.Min(p => p.X), contour.Max(p => p.X),
@@ -199,20 +277,38 @@ namespace LiraSlabZones.Core
             AdditionalZone zone, IList<OpeningInfo> openings, AnalysisSettings settings,
             IList<LiraPlateElement>? plates = null)
         {
+            // Direction is a layer setting, not persistent geometry. Re-resolve it here
+            // because imported/edited zones may still carry the pre-reverse direction.
+            var effectiveDirection = RebarTables.DirectionForLayer(
+                zone.Layer, settings.ReverseZoneDirections);
+            zone.Direction = effectiveDirection;
+            var zoneBounds = Bounds(zone.Contour);
+            var influenceGap = UnitConversion.MmToMeters(Math.Max(0, settings.EdgeOffsetMm)) + 1e-5;
             var relevant = openings.Where(op => !HoleBentRules.ShouldIgnoreOpening(
-                    op, zone.Direction, settings.HoleIgnorePerpMm))
+                    op, effectiveDirection, settings.HoleIgnorePerpMm))
                 .Where(op => HoleBentRules.RectIntersects(op,
-                    zone.Contour.Min(p => p.X), zone.Contour.Max(p => p.X),
-                    zone.Contour.Min(p => p.Y), zone.Contour.Max(p => p.Y)))
+                        zoneBounds.MinX, zoneBounds.MaxX, zoneBounds.MinY, zoneBounds.MaxY) ||
+                    (effectiveDirection == ZoneDirection.X
+                        ? Math.Min(zoneBounds.MaxY, op.MaxYM) - Math.Max(zoneBounds.MinY, op.MinYM) > 1e-6 &&
+                          (Math.Abs(zoneBounds.MinX - op.MaxXM) <= influenceGap ||
+                           Math.Abs(zoneBounds.MaxX - op.MinXM) <= influenceGap)
+                        : Math.Min(zoneBounds.MaxX, op.MaxXM) - Math.Max(zoneBounds.MinX, op.MinXM) > 1e-6 &&
+                          (Math.Abs(zoneBounds.MinY - op.MaxYM) <= influenceGap ||
+                           Math.Abs(zoneBounds.MaxY - op.MinYM) <= influenceGap)))
                 .ToList();
-            if (relevant.Count == 0 || !IntersectsOpening(zone, relevant))
+            if (relevant.Count == 0)
                 return new List<AdditionalZone> { zone };
 
-            var parts = ExcludeOpenings(zone, relevant);
+            var parts = IntersectsOpening(zone, relevant)
+                ? ExcludeOpenings(zone, relevant)
+                : new List<AdditionalZone> { zone };
+            if (plates != null && plates.Count > 0)
+                parts = SplitAtTransverseOpeningEdges(parts, relevant, effectiveDirection);
             foreach (var part in parts)
             {
+                part.Direction = effectiveDirection;
                 var bounds = Bounds(part.Contour);
-                var endsAtOpening = relevant.Any(op => zone.Direction == ZoneDirection.X
+                var endsAtOpening = relevant.Any(op => effectiveDirection == ZoneDirection.X
                     ? Math.Min(bounds.MaxY, op.MaxYM) - Math.Max(bounds.MinY, op.MinYM) > 1e-6 &&
                       (Math.Abs(bounds.MaxX - op.MinXM) < 1e-5 ||
                        Math.Abs(bounds.MinX - op.MaxXM) < 1e-5)
@@ -221,6 +317,29 @@ namespace LiraSlabZones.Core
                        Math.Abs(bounds.MinY - op.MaxYM) < 1e-5));
                 if (endsAtOpening && settings.ApplyBentRules)
                 {
+                    var gapM = UnitConversion.MmToMeters(Math.Max(0, settings.EdgeOffsetMm));
+                    var minX = bounds.MinX;
+                    var maxX = bounds.MaxX;
+                    var minY = bounds.MinY;
+                    var maxY = bounds.MaxY;
+                    foreach (var op in relevant)
+                    {
+                        if (effectiveDirection == ZoneDirection.X)
+                        {
+                            if (Math.Abs(maxX - op.MinXM) < 1e-5) maxX -= gapM;
+                            if (Math.Abs(minX - op.MaxXM) < 1e-5) minX += gapM;
+                        }
+                        else
+                        {
+                            if (Math.Abs(maxY - op.MinYM) < 1e-5) maxY -= gapM;
+                            if (Math.Abs(minY - op.MaxYM) < 1e-5) minY += gapM;
+                        }
+                    }
+                    if (maxX - minX > 0.05 && maxY - minY > 0.05)
+                    {
+                        SetContour(part, Rectangle(minX, maxX, minY, maxY, part.LevelZM));
+                        bounds = Bounds(part.Contour);
+                    }
                     part.VerticalLegMm = HoleBentRules.VerticalLegAvailableMm(
                         settings.SlabThicknessMm, settings.CoverTopMm,
                         settings.CoverBottomMm, part.DiameterMm);
@@ -247,7 +366,121 @@ namespace LiraSlabZones.Core
                     part.ElementId = part.NodeIds.FirstOrDefault();
                 }
             }
+            if (plates != null && plates.Count > 0)
+            {
+                foreach (var part in parts.Where(part => part.NodeIds.Count > 0))
+                    RestoreLongitudinalPlacement(part, relevant, settings, plates);
+            }
             return parts;
+        }
+
+        private static void RestoreLongitudinalPlacement(
+            AdditionalZone zone, IList<OpeningInfo> openings, AnalysisSettings settings,
+            IList<LiraPlateElement> plates)
+        {
+            var assigned = plates.Where(plate => zone.NodeIds.Contains(plate.Id)).ToList();
+            if (assigned.Count == 0 || zone.Contour.Count < 3) return;
+            var bounds = Bounds(zone.Contour);
+            var coreMin = zone.Direction == ZoneDirection.X
+                ? assigned.Min(plate => plate.Contour.Min(point => point.X))
+                : assigned.Min(plate => plate.Contour.Min(point => point.Y));
+            var coreMax = zone.Direction == ZoneDirection.X
+                ? assigned.Max(plate => plate.Contour.Max(point => point.X))
+                : assigned.Max(plate => plate.Contour.Max(point => point.Y));
+            var anchorageM = UnitConversion.MmToMeters(
+                RebarTables.AnchorageLenMm(settings.ConcreteClass, zone.DiameterMm));
+            var gapM = UnitConversion.MmToMeters(Math.Max(0, settings.EdgeOffsetMm));
+            var start = coreMin - anchorageM;
+            var end = coreMax + anchorageM;
+            var startConstrained = false;
+            var endConstrained = false;
+
+            foreach (var opening in openings)
+            {
+                var transverseOverlap = zone.Direction == ZoneDirection.X
+                    ? Math.Min(bounds.MaxY, opening.MaxYM) - Math.Max(bounds.MinY, opening.MinYM)
+                    : Math.Min(bounds.MaxX, opening.MaxXM) - Math.Max(bounds.MinX, opening.MinXM);
+                if (transverseOverlap <= 1e-6) continue;
+                var openingMin = zone.Direction == ZoneDirection.X ? opening.MinXM : opening.MinYM;
+                var openingMax = zone.Direction == ZoneDirection.X ? opening.MaxXM : opening.MaxYM;
+                if (coreMax <= openingMin + 1e-5)
+                {
+                    end = Math.Min(end, openingMin - gapM);
+                    endConstrained = true;
+                }
+                else if (coreMin >= openingMax - 1e-5)
+                {
+                    start = Math.Max(start, openingMax + gapM);
+                    startConstrained = true;
+                }
+            }
+            if (end - start <= 0.05 || start > coreMin + 1e-6 || end < coreMax - 1e-6) return;
+
+            if (zone.FamilyKind == ZoneFamilyKind.Straight)
+            {
+                var familyM = UnitConversion.MmToMeters(
+                    RebarTables.PickFamilyLength(UnitConversion.MetersToMm(end - start)));
+                var center = (coreMin + coreMax) / 2.0;
+                var familyStart = center - familyM / 2.0;
+                var familyEnd = center + familyM / 2.0;
+                if (endConstrained) { familyEnd = end; familyStart = end - familyM; }
+                else if (startConstrained) { familyStart = start; familyEnd = start + familyM; }
+                start = familyStart;
+                end = familyEnd;
+            }
+
+            if (zone.Direction == ZoneDirection.X)
+                SetContour(zone, Rectangle(start, end, bounds.MinY, bounds.MaxY, zone.LevelZM));
+            else
+                SetContour(zone, Rectangle(bounds.MinX, bounds.MaxX, start, end, zone.LevelZM));
+        }
+
+        private static List<AdditionalZone> SplitAtTransverseOpeningEdges(
+            List<AdditionalZone> source, IList<OpeningInfo> openings, ZoneDirection direction)
+        {
+            var result = new List<AdditionalZone>();
+            foreach (var part in source)
+            {
+                var bounds = Bounds(part.Contour);
+                var cuts = openings
+                    .SelectMany(op => direction == ZoneDirection.X
+                        ? new[] { op.MinYM, op.MaxYM }
+                        : new[] { op.MinXM, op.MaxXM })
+                    .Where(value => value > (direction == ZoneDirection.X ? bounds.MinY : bounds.MinX) + 1e-5 &&
+                                    value < (direction == ZoneDirection.X ? bounds.MaxY : bounds.MaxX) - 1e-5)
+                    .Distinct()
+                    .OrderBy(value => value)
+                    .ToList();
+                if (cuts.Count == 0)
+                {
+                    result.Add(part);
+                    continue;
+                }
+
+                var edges = new List<double>
+                {
+                    direction == ZoneDirection.X ? bounds.MinY : bounds.MinX
+                };
+                edges.AddRange(cuts);
+                edges.Add(direction == ZoneDirection.X ? bounds.MaxY : bounds.MaxX);
+                for (var i = 0; i < edges.Count - 1; i++)
+                {
+                    if (edges[i + 1] - edges[i] <= 0.05) continue;
+                    var copy = Copy(part);
+                    var rectangle = direction == ZoneDirection.X
+                        ? Rectangle(bounds.MinX, bounds.MaxX, edges[i], edges[i + 1], part.LevelZM)
+                        : Rectangle(edges[i], edges[i + 1], bounds.MinY, bounds.MaxY, part.LevelZM);
+                    var clipped = Clipper.Intersect(new Paths64 { ToPath(part.Contour) },
+                        new Paths64 { ToPath(rectangle) }, FillRule.NonZero);
+                    foreach (var path in clipped.Where(path => path.Count >= 3))
+                    {
+                        var band = Copy(copy);
+                        SetContour(band, FromPath(path, band.LevelZM));
+                        result.Add(band);
+                    }
+                }
+            }
+            return result;
         }
 
         public static AdditionalZone? Create(

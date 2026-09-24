@@ -154,6 +154,34 @@ Assert (($holePieces | Where-Object FamilyKind -eq ([LiraSlabZones.Core.ZoneFami
 Assert (($holePieces | Where-Object FamilyKind -ne ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Bars ending at the opening must use bent families.'
 Assert (($holePieces | Where-Object { [LiraSlabZones.Core.ZoneEditor]::IntersectsOpening($_, $detectedHoles) }).Count -eq 0) 'A split piece still crosses the opening.'
 Write-Host 'PASS opening splits bent end pieces and straight bypass pieces'
+
+# При реверсе направление для правил отверстия определяется по слою, даже если
+# зона была загружена со старым (нереверсивным) значением Direction.
+$reverseHoleSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$reverseHoleSettings.ReverseZoneDirections = $true
+$reverseHoleSettings.SlabThicknessMm = 200
+$reverseHoleSettings.CoverTopMm = 25
+$reverseHoleSettings.CoverBottomMm = 25
+$reverseHoleTemplate = [LiraSlabZones.Core.AdditionalZone]::new()
+$reverseHoleTemplate.Layer = [LiraSlabZones.Core.RebarLayer]::As2
+$reverseHoleTemplate.Direction = [LiraSlabZones.Core.ZoneDirection]::Y
+$reverseHoleTemplate.DiameterMm = 16
+$reverseHoleTemplate.BarStepMm = 200
+$reverseHoleTemplate.FamilyKind = [LiraSlabZones.Core.ZoneFamilyKind]::Straight
+$reverseCrossing = [LiraSlabZones.Core.ZoneEditor]::Create(
+    $reverseHoleTemplate, 0.5, 5.5, 0.5, 5.5, $holeOutline)
+$reverseHolePieces = [LiraSlabZones.Core.ZoneEditor]::SplitAtOpenings(
+    $reverseCrossing, $detectedHoles, $reverseHoleSettings)
+Assert ($reverseHolePieces.Count -eq 4) 'Reversed As2 opening split must produce four pieces.'
+Assert (($reverseHolePieces | Where-Object Direction -ne $xDirection).Count -eq 0) 'Reversed As2 opening rules did not switch to X.'
+Assert (($reverseHolePieces | Where-Object FamilyKind -ne ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Reversed As2 must bend the two X-directed ends at the opening.'
+Assert (($reverseHolePieces | Where-Object FamilyKind -eq ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Reversed As2 must keep the two bypass lanes straight.'
+$reverseBentPieces = @($reverseHolePieces | Where-Object FamilyKind -ne ([LiraSlabZones.Core.ZoneFamilyKind]::Straight))
+$leftBentMaxX = (($reverseBentPieces | Where-Object { ($_.Contour.X | Measure-Object -Maximum).Maximum -lt $detectedHoles[0].MinXM }).Contour.X | Measure-Object -Maximum).Maximum
+$rightBentMinX = (($reverseBentPieces | Where-Object { ($_.Contour.X | Measure-Object -Minimum).Minimum -gt $detectedHoles[0].MaxXM }).Contour.X | Measure-Object -Minimum).Minimum
+Assert ([Math]::Abs(($detectedHoles[0].MinXM - $leftBentMaxX) * 1000 - 50) -lt 1) 'Left bent end has no 50 mm opening gap.'
+Assert ([Math]::Abs(($rightBentMinX - $detectedHoles[0].MaxXM) * 1000 - 50) -lt 1) 'Right bent end has no 50 mm opening gap.'
+Write-Host 'PASS reversed As2 opening split uses As1/As3 X-direction rules'
 $holeResult = [LiraSlabZones.Core.AnalysisResult]::new()
 $holeResult.Settings = $openingSettings
 $holeResult.Outline = $holeOutline
@@ -376,6 +404,38 @@ foreach ($id in $activeIds) {
 $approxSettings.ReverseZoneDirections = $false
 Write-Host 'PASS reversed As3 layout uses Y and retains FE coverage'
 
+# При реверсе As2 стержень идёт по X и остаётся центрированным относительно пятна,
+# сохраняя анкеровку по бетону с обеих сторон.
+$reverseAs2Settings = [Newtonsoft.Json.JsonConvert]::DeserializeObject(
+    [Newtonsoft.Json.JsonConvert]::SerializeObject($approxSettings),
+    [LiraSlabZones.Core.AnalysisSettings])
+$reverseAs2Settings.ShowAs2 = $true
+$reverseAs2Settings.ShowAs3 = $false
+$reverseAs2Settings.ReverseZoneDirections = $true
+$reverseAs2Plate = New-PolygonPlate 91 @(@(2.6,1.6), @(3.4,1.6), @(3.4,2.4), @(2.6,2.4)) 0
+$reverseAs2Plate.Rebar.As2 = $reverseAs2Settings.AsMainAs2 + 4.0
+$reverseAs2Plates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$reverseAs2Plates.Add($reverseAs2Plate)
+$reverseOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+foreach ($xy in @(@(0,0), @(6,0), @(6,4), @(0,4))) {
+    $reverseOutline.Add([LiraSlabZones.Core.Point3]::new($xy[0], $xy[1], 3))
+}
+$reverseAs2Zones = [LiraSlabZones.Core.ZoneLayoutEngine]::Layout(
+    $reverseAs2Plates, $reverseAs2Settings, $null, $reverseOutline, $null)
+Assert ($reverseAs2Zones.Count -eq 1) 'Reversed As2 did not create one centred zone.'
+$reverseAs2Zone = $reverseAs2Zones[0]
+Assert ($reverseAs2Zone.Direction -eq $xDirection) 'Reversed As2 bar direction is not X.'
+$zoneMinX = ($reverseAs2Zone.Contour.X | Measure-Object -Minimum).Minimum
+$zoneMaxX = ($reverseAs2Zone.Contour.X | Measure-Object -Maximum).Maximum
+$leftAnchorMm = (2.6 - $zoneMinX) * 1000
+$rightAnchorMm = ($zoneMaxX - 3.4) * 1000
+$requiredAnchorMm = [LiraSlabZones.Core.RebarTables]::AnchorageLenMm(
+    $reverseAs2Settings.ConcreteClass, $reverseAs2Zone.DiameterMm)
+Assert ([Math]::Abs($leftAnchorMm - $rightAnchorMm) -le 1.1) 'Reversed As2 zone is not centred along X.'
+Assert ($leftAnchorMm + 1 -ge $requiredAnchorMm -and $rightAnchorMm + 1 -ge $requiredAnchorMm) `
+    'Reversed As2 zone lost concrete anchorage.'
+Write-Host 'PASS reversed As2 is centred along X and preserves anchorage'
+
 $testOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
 $testOutline.Add([LiraSlabZones.Core.Point3]::new(0, 0, 3))
 $testOutline.Add([LiraSlabZones.Core.Point3]::new(4, 0, 3))
@@ -399,6 +459,22 @@ $edgeTriangle = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]:
 $edgeTriangle.Add((New-PolygonPlate 301 @(@(0.05,0.8), @(1.1,1.4), @(0.05,2.0)) $activeAs3))
 Assert-PolygonApproximation 'edge triangle' $edgeTriangle $approxSettings $testOutline
 
+# Локальный скруглённый/ломаный край не совпадает с AABB плиты, но всё равно
+# должен назначить гнутое семейство вместо набора прямых зон у дуги.
+$roundedOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+foreach ($xy in @(@(0,0), @(4,0), @(4,2), @(3.8,2.8), @(3.3,3.5), @(2.5,4), @(0,4))) {
+    $roundedOutline.Add([LiraSlabZones.Core.Point3]::new($xy[0], $xy[1], 3))
+}
+$roundedPlate = New-PolygonPlate 302 @(@(3.05,2.75), @(3.45,2.75), @(3.45,3.15), @(3.05,3.15)) $activeAs3
+$roundedPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$roundedPlates.Add($roundedPlate)
+$roundedZones = [LiraSlabZones.Core.ZoneLayoutEngine]::Layout(
+    $roundedPlates, $approxSettings, $null, $roundedOutline, $null)
+Assert ($roundedZones.Count -gt 0) 'Rounded edge removed the required zone.'
+Assert (($roundedZones | Where-Object { $_.FamilyKind -ne [LiraSlabZones.Core.ZoneFamilyKind]::Straight }).Count -gt 0) `
+    'Rounded local edge was not assigned a bent family.'
+Write-Host 'PASS rounded local edge uses a bent family'
+
 # MinActiveElements считает окрашенные КЭ, а не число занятых ими ячеек мозаики.
 $approxSettings.MinActiveElements = 2
 $singleLarge = [LiraSlabZones.Core.ZoneLayoutEngine]::Layout($rotatedQuad, $approxSettings, $null, $testOutline, $null)
@@ -407,6 +483,22 @@ Assert ($singleLarge.Count -eq 0) 'One colored FE was counted as several raster 
 Assert ($twoElements.Count -gt 0) 'Two colored FE did not satisfy MinActiveElements=2.'
 $approxSettings.MinActiveElements = 0
 Write-Host 'PASS minimum FE counts unique colored finite elements'
+
+# Geometry cache returns defensive copies and spatial index limits candidate lookup.
+$geometryA = [LiraSlabZones.Core.SlabGeometryCache]::Get($trianglePair)
+$geometryB = [LiraSlabZones.Core.SlabGeometryCache]::Get($trianglePair)
+Assert (-not [object]::ReferenceEquals($geometryA.Item1, $geometryB.Item1)) 'Geometry cache reused the mutable outline list.'
+Assert (-not [object]::ReferenceEquals($geometryA.Item1[0], $geometryB.Item1[0])) 'Geometry cache reused mutable outline points.'
+$spatial = [LiraSlabZones.Core.ZoneSpatialIndex]::new(1.0)
+$spatial.Add(10, 0, 1, 0, 1)
+$spatial.Add(20, 5, 6, 5, 6)
+Assert (@($spatial.Query(-0.1, 1.1, -0.1, 1.1)).Count -eq 1) 'Spatial index returned a distant candidate.'
+Write-Host 'PASS immutable slab geometry cache and spatial candidate lookup'
+
+$noZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$diagnostics = [LiraSlabZones.Core.ZoneLayoutDiagnostics]::Evaluate($trianglePair, $noZones, $approxSettings)
+Assert ($diagnostics.UncoveredCount -eq 2) 'Diagnostics did not report both uncovered colored FE.'
+Write-Host 'PASS diagnostics reports uncovered finite elements'
 
 # Три одинаковые соосные зоны с промежутком в один шаг объединяются в одну.
 $aligned = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
@@ -472,6 +564,18 @@ if ($InputJson) {
     })
     Assert ($narrowInterior.Count -eq 0) "Interior straight zone $($narrowInterior[0].ZoneId) is narrower than the requested minimum: $($narrowInterior[0].WidthMm) mm."
     Assert (($wide.Zones | ForEach-Object { $_.NodeIds.Count } | Measure-Object -Maximum).Maximum -gt 1) 'Connected cells were not merged.'
+    $as2Before = @($wide.Zones | Where-Object { $_.Layer -eq [LiraSlabZones.Core.RebarLayer]::As2 } |
+        ForEach-Object { "$($_.DiameterMm):$($_.LengthMm):$($_.Placement.X):$($_.Placement.Y)" }) -join '|'
+    $localSettings = [Newtonsoft.Json.JsonConvert]::DeserializeObject(
+        [Newtonsoft.Json.JsonConvert]::SerializeObject($wide.Settings),
+        [LiraSlabZones.Core.AnalysisSettings])
+    $localSettings.ShowAs1 = -not $localSettings.ShowAs1
+    $local = [LiraSlabZones.Core.SlabZoneAnalyzer]::RebuildLayers($wide, $localSettings,
+        [LiraSlabZones.Core.RebarLayer[]]@([LiraSlabZones.Core.RebarLayer]::As1))
+    $as2After = @($local.Zones | Where-Object { $_.Layer -eq [LiraSlabZones.Core.RebarLayer]::As2 } |
+        ForEach-Object { "$($_.DiameterMm):$($_.LengthMm):$($_.Placement.X):$($_.Placement.Y)" }) -join '|'
+    Assert ($as2After -eq $as2Before) 'Local As1 rebuild changed As2 zones.'
+    Write-Host 'PASS local layer rebuild preserves unchanged As2 geometry'
     $loaded = $wide
     Write-Host "PASS provided JSON: $($loaded.Plates.Count) plates, $($loaded.Zones.Count) merged zones with min width 800 mm"
 
@@ -584,6 +688,42 @@ if ($InputJson) {
     Assert-ZonesInsideOutline $layerZones $loaded.Outline
     Assert-ZoneRules $layerZones 12
     Write-Host "PASS Z=29.450 As2 Max: $($layerZones.Count) zones cover all $($active.Count) colored FE; $($bentEdgeAs2.Count) bent edge zones"
+
+    $settings.ReverseZoneDirections = $true
+    $reversedAs2 = [LiraSlabZones.Core.SlabZoneAnalyzer]::LoadJson($InputJson, $settings)
+    $reversedZones = @($reversedAs2.Zones | Where-Object { $_.Layer -eq [LiraSlabZones.Core.RebarLayer]::As2 })
+    $reversedActive = @($reversedAs2.Plates | Where-Object {
+        $_.Rebar.Ok -and $_.Rebar.As2 - $reversedAs2.Settings.AsMainAs2 -gt 0.01
+    })
+    $reversedUncovered = @($reversedActive | Where-Object { -not (Test-ZoneCoverage $_ $reversedZones) })
+    if ($reversedUncovered.Count -gt 0) {
+        Write-Host ('Reversed uncovered: ' + (($reversedUncovered | ForEach-Object {
+            "$($_.Id) ($($_.Centroid.X.ToString('0.000')),$($_.Centroid.Y.ToString('0.000')))"
+        }) -join ', '))
+    }
+    Assert ($reversedZones.Count -gt 0) 'Reversed Z=29.450 As2 produced no zones.'
+    Assert (($reversedZones | Where-Object { $_.Direction -ne $xDirection }).Count -eq 0) `
+        'Reversed Z=29.450 As2 contains a zone not directed along X.'
+    Assert ($reversedUncovered.Count -eq 0) `
+        "Reversed Z=29.450 As2 has $($reversedUncovered.Count) uncovered FE."
+    Assert ($reversedAs2.Diagnostics.EmptyZoneCount -eq 0) `
+        "Reversed Z=29.450 As2 has $($reversedAs2.Diagnostics.EmptyZoneCount) empty zones."
+    $closeEndPairs = 0
+    for ($i = 0; $i -lt $reversedZones.Count; $i++) {
+        for ($j = $i + 1; $j -lt $reversedZones.Count; $j++) {
+            $a = $reversedZones[$i]; $b = $reversedZones[$j]
+            $ax = $a.Contour.X | Measure-Object -Minimum -Maximum
+            $ay = $a.Contour.Y | Measure-Object -Minimum -Maximum
+            $bx = $b.Contour.X | Measure-Object -Minimum -Maximum
+            $by = $b.Contour.Y | Measure-Object -Minimum -Maximum
+            $overlapY = [Math]::Min($ay.Maximum,$by.Maximum)-[Math]::Max($ay.Minimum,$by.Minimum)
+            $gapX = [Math]::Max(0,[Math]::Max($ax.Minimum,$bx.Minimum)-[Math]::Min($ax.Maximum,$bx.Maximum))
+            $required = [Math]::Min($a.BarStepMm,$b.BarStepMm)/1000.0
+            if ($overlapY -gt 0.000001 -and $gapX -gt 0 -and $gapX -lt $required - 0.000001) { $closeEndPairs++ }
+        }
+    }
+    Assert ($closeEndPairs -eq 0) "Reversed As2 has $closeEndPairs end-to-end pairs closer than their bar spacing."
+    Write-Host "PASS reversed Z=29.450 As2: $($reversedZones.Count) X-directed zones cover all FE without empty zones"
 
 }
 

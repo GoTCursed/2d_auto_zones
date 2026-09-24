@@ -275,9 +275,20 @@
             <Button Content="↔" Width="28" Margin="0,0,3,0" Click="BtnEditResize_Click" ToolTip="Изменить размер: перетащите край зоны"/>
             <Button Content="+▭" Width="34" Margin="0,0,3,0" Click="BtnEditCreate_Click" ToolTip="Создать зону рамкой; свойства берутся с выбранной зоны"/>
             <Button Content="┆" Width="28" Margin="0,0,3,0" Click="BtnEditSplit_Click" ToolTip="Разделить зону в точке клика"/>
+            <Button Content="⊥" Width="28" Margin="0,0,3,0" Click="BtnEditPerpendicular_Click"
+                    ToolTip="Один раз разделить зону перпендикулярно выбранной грани"/>
             <Button Content="∪" Width="28" Margin="0,0,3,0" Click="BtnEditMerge_Click" ToolTip="Объединить две последовательно выбранные зоны"/>
             <Button Content="↔|" Width="34" Margin="0,0,3,0" Click="BtnEditGap_Click" ToolTip="Создать зазор: первая зона перемещается от второй на меньший шаг"/>
             <Button Content="×" Width="28" Margin="0,0,10,0" Click="BtnEditDelete_Click" ToolTip="Удалить зону"/>
+            <ComboBox x:Name="CmbDiagnostics" Width="132" Height="24" Margin="0,0,10,0"
+                      SelectedIndex="0" SelectionChanged="CmbDiagnostics_SelectionChanged"
+                      ToolTip="Фильтр диагностической подсветки">
+              <ComboBoxItem Content="Все ошибки" Tag="All"/>
+              <ComboBoxItem Content="Непокрытые КЭ" Tag="Uncovered"/>
+              <ComboBoxItem Content="Ошибки зон" Tag="ZoneErrors"/>
+              <ComboBoxItem Content="Конфликты" Tag="Conflicts"/>
+              <ComboBoxItem Content="Без диагностики" Tag="Off"/>
+            </ComboBox>
             <Button Content="−" Width="28" Margin="0,0,4,0" Click="BtnZoomOut_Click" ToolTip="Отдалить"/>
             <Button Content="+" Width="28" Margin="0,0,4,0" Click="BtnZoomIn_Click" ToolTip="Приблизить"/>
             <Button Content="100%" Width="44" Margin="0,0,4,0" Click="BtnZoomReset_Click" ToolTip="Сброс масштаба"/>
@@ -350,8 +361,6 @@
               <ComboBoxItem Content="100"/><ComboBoxItem Content="200"/>
             </ComboBox>
           </DockPanel>
-          <Button Content="⊥ Выбрать грань" Click="BtnEditPerpendicular_Click"
-                  ToolTip="Кликните у грани зоны: разрез пройдёт через точку клика перпендикулярно этой грани"/>
           <Separator Margin="0,8,0,8"/>
           <TextBlock Text="Габариты зоны, мм (L × B)" FontSize="11" Foreground="#6B7280"/>
           <Grid Margin="0,4,0,6">

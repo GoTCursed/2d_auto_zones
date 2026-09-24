@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
+using Newtonsoft.Json.Linq;
 using LiraSlabZones.Core;
 using Microsoft.Win32;
 
@@ -99,6 +100,13 @@ namespace LiraSlabZones.Revit2023.UI
         private void BtnEditGap_Click(object sender, RoutedEventArgs e) => SetZoneEditMode(ZoneEditMode.CreateGap);
         private void BtnEditPerpendicular_Click(object sender, RoutedEventArgs e) =>
             SetZoneEditMode(ZoneEditMode.PerpendicularToEdge);
+
+        private void CmbDiagnostics_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (Viewport == null || !(CmbDiagnostics?.SelectedItem is ComboBoxItem item)) return;
+            if (Enum.TryParse(item.Tag?.ToString(), out DiagnosticFilter filter))
+                Viewport.SetDiagnosticFilter(filter);
+        }
 
         private void BtnApplyZoneDiameter_Click(object sender, RoutedEventArgs e)
         {
@@ -368,6 +376,41 @@ namespace LiraSlabZones.Revit2023.UI
         private void BtnRebuild_Click(object sender, RoutedEventArgs e) =>
             RebuildZonesPreservingView(fromUi: true);
 
+        private static bool TryGetLayerOnlyChanges(
+            AnalysisSettings? oldSettings, AnalysisSettings newSettings,
+            out HashSet<RebarLayer> changed)
+        {
+            changed = new HashSet<RebarLayer>();
+            if (oldSettings == null) return false;
+            if (oldSettings.ShowAs1 != newSettings.ShowAs1 ||
+                Math.Abs(oldSettings.AsMainAs1 - newSettings.AsMainAs1) > 1e-9)
+                changed.Add(RebarLayer.As1);
+            if (oldSettings.ShowAs2 != newSettings.ShowAs2 ||
+                Math.Abs(oldSettings.AsMainAs2 - newSettings.AsMainAs2) > 1e-9)
+                changed.Add(RebarLayer.As2);
+            if (oldSettings.ShowAs3 != newSettings.ShowAs3 ||
+                Math.Abs(oldSettings.AsMainAs3 - newSettings.AsMainAs3) > 1e-9)
+                changed.Add(RebarLayer.As3);
+            if (oldSettings.ShowAs4 != newSettings.ShowAs4 ||
+                Math.Abs(oldSettings.AsMainAs4 - newSettings.AsMainAs4) > 1e-9)
+                changed.Add(RebarLayer.As4);
+            if (oldSettings.BgBottomDiameterMm != newSettings.BgBottomDiameterMm ||
+                oldSettings.BgBottomStepMm != newSettings.BgBottomStepMm)
+            { changed.Add(RebarLayer.As1); changed.Add(RebarLayer.As2); }
+            if (oldSettings.BgTopDiameterMm != newSettings.BgTopDiameterMm ||
+                oldSettings.BgTopStepMm != newSettings.BgTopStepMm)
+            { changed.Add(RebarLayer.As3); changed.Add(RebarLayer.As4); }
+            if (changed.Count == 0) return false;
+
+            var oldJson = JObject.FromObject(oldSettings);
+            var newJson = JObject.FromObject(newSettings);
+            foreach (var name in new[] { "ShowAs1", "ShowAs2", "ShowAs3", "ShowAs4",
+                "AsMainCm2PerM", "AsMainAs1", "AsMainAs2", "AsMainAs3", "AsMainAs4",
+                "BgBottomDiameterMm", "BgBottomStepMm", "BgTopDiameterMm", "BgTopStepMm" })
+            { oldJson.Remove(name); newJson.Remove(name); }
+            return JToken.DeepEquals(oldJson, newJson);
+        }
+
         /// <summary>Пересчёт зон без сброса зума/пана и полей UI.</summary>
         private void RebuildZonesPreservingView(bool fromUi)
         {
@@ -384,7 +427,9 @@ namespace LiraSlabZones.Revit2023.UI
             var units = _result.UnitsNote;
 
             AnalysisResult rebuilt;
-            if (!double.IsNaN(settings.TargetElevationZM))
+            if (TryGetLayerOnlyChanges(_result.Settings, settings, out var changedLayers))
+                rebuilt = SlabZoneAnalyzer.RebuildLayers(_result, settings, changedLayers);
+            else if (!double.IsNaN(settings.TargetElevationZM))
                 rebuilt = SlabZoneAnalyzer.RebuildForElevation(_result, settings.TargetElevationZM, settings);
             else
             {
@@ -934,6 +979,7 @@ namespace LiraSlabZones.Revit2023.UI
                 : _result.ElevationLabel;
             var mode = _result.Settings.AutoLayout ? "Автораскладка" : "По КЭ";
             var overlong = _result.Zones.Count(RebarTables.ExceedsMaxBarLength);
+            var diagnostics = _result.Diagnostics ?? new ZoneDiagnostics();
             TxtStats.Text =
                 $"Отметка: {elev}\n" +
                 $"Режим: {mode} / {st.DetailLevelLabel}\n" +
@@ -947,6 +993,9 @@ namespace LiraSlabZones.Revit2023.UI
                 $"Масса стали ≈ {st.TotalSteelMassKg:F1} кг\n" +
                 $"Расход ≈ {st.SteelKgPerM3:F1} кг/м³\n" +
                 $"Контур: {_result.Outline.Count} вершин\n" +
+                $"Непокрытые КЭ: {diagnostics.UncoveredCount}\n" +
+                $"Пустые зоны: {diagnostics.EmptyZoneCount}\n" +
+                $"Конфликты зон: {diagnostics.ConflictCount}\n" +
                 (overlong > 0 ? $"Превышение 11700 мм: {overlong} (размещение заблокировано)\n" : "") +
                 $"⚠ {st.WarnCount}   ✕ {st.ErrorCount}";
             TxtDetail.Text = string.IsNullOrWhiteSpace(st.DetailLevelLabel)

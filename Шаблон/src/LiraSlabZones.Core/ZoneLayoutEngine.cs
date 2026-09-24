@@ -231,7 +231,18 @@ namespace LiraSlabZones.Core
                         direction == ZoneDirection.X ? (maxXM - minXM) : (maxYM - minYM));
                     familyLen = RebarTables.PickFamilyLengthFit(availLenMm);
                     if (familyLen < minFamilyLen) continue;
-                    CenterAlongLength(ref minXM, ref maxXM, ref minYM, ref maxYM, direction, familyLen);
+                    var beforeReverseCenter = (minXM, maxXM, minYM, maxYM);
+                    // Axis snapping and contour clipping may shift the rectangle along the
+                    // bar axis. Restore its centre to the required FE footprint so that the
+                    // anchorage allowance remains balanced for reversed layers as well.
+                    if (settings.ReverseZoneDirections)
+                        CenterAlongCore(
+                            ref minXM, ref maxXM, ref minYM, ref maxYM,
+                            direction, familyLen, longStartM, longEndM);
+                    else
+                        CenterAlongLength(
+                            ref minXM, ref maxXM, ref minYM, ref maxYM,
+                            direction, familyLen);
 
                     // Ширина кратна шагу, не шире клипа и в пределах min/max
                     double availWidMm = UnitConversion.MetersToMm(
@@ -275,6 +286,12 @@ namespace LiraSlabZones.Core
                         (minXM, maxXM, minYM, maxYM) = beforeGap;
                     if (!MeshBoundary.ClipRectToSlab(ref minXM, ref maxXM, ref minYM, ref maxYM, outline, settings.SlabEdgeInsetMm))
                         continue;
+                    if (settings.ReverseZoneDirections && !elementIds.Distinct().All(id =>
+                            mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
+                            CoversPoint(minXM, maxXM, minYM, maxYM, centroid.X, centroid.Y)))
+                    {
+                        (minXM, maxXM, minYM, maxYM) = beforeReverseCenter;
+                    }
                     if (!CoversPoint(minXM, maxXM, minYM, maxYM, peakXM, peakYM) &&
                         !OverlapsCore(minXM, maxXM, minYM, maxYM, x0, x1, y0, y1))
                         continue;
@@ -467,6 +484,24 @@ namespace LiraSlabZones.Core
             }
         }
 
+        private static void CenterAlongCore(
+            ref double minXM, ref double maxXM, ref double minYM, ref double maxYM,
+            ZoneDirection direction, double familyLenMm, double coreStartM, double coreEndM)
+        {
+            var lenM = UnitConversion.MmToMeters(familyLenMm);
+            var center = (coreStartM + coreEndM) / 2.0;
+            if (direction == ZoneDirection.X)
+            {
+                minXM = center - lenM / 2.0;
+                maxXM = center + lenM / 2.0;
+            }
+            else
+            {
+                minYM = center - lenM / 2.0;
+                maxYM = center + lenM / 2.0;
+            }
+        }
+
         private static bool OverlapsCore(
             double minX, double maxX, double minY, double maxY,
             double cMinX, double cMaxX, double cMinY, double cMaxY)
@@ -647,7 +682,7 @@ namespace LiraSlabZones.Core
                 }
             }
 
-            // Phase 1: reduce provisional rectangles and apply basic constraints.
+            // Initial normalization before the convergent correction loop.
             TrimZonesToActiveCells(merged, mosaic, settings);
             EnforceZoneGaps(merged, mosaic.CellMm);
             MergeCompatibleAlignedZones(merged);
@@ -655,7 +690,7 @@ namespace LiraSlabZones.Core
             EnforceZoneGaps(merged, mosaic.CellMm);
             FitZonesInsideSlab(merged, outline, settings.SlabEdgeInsetMm);
 
-            // Phase 2: recover coverage before standard-length stabilization.
+            // Establish a covered baseline before iterative conflict resolution.
             MergeActualOverlaps(merged);
             TrimZonesToActiveCells(merged, mosaic, settings);
             AddRecoveryZones(merged, mosaic, layer, settings, openings, outline, axes);
@@ -667,7 +702,8 @@ namespace LiraSlabZones.Core
             TrimZonesToActiveCells(merged, mosaic, settings);
             NormalizeZoneLengths(merged, outline, settings.SlabEdgeInsetMm);
 
-            // Phase 3: final coverage and lap validation.
+            // Bounded correction schedule. Each stage has a distinct invariant; unlike
+            // the former open-ended retries, this schedule executes once and terminates.
             AddRecoveryZones(merged, mosaic, layer, settings, openings, outline, axes);
             MergeActualOverlaps(merged);
             NormalizeZoneLengths(merged, outline, settings.SlabEdgeInsetMm);
@@ -716,17 +752,69 @@ namespace LiraSlabZones.Core
             TrimZonesToActiveCells(merged, mosaic, settings);
             PartitionInvalidOverlaps(merged, mosaic);
             RefreshZoneDimensions(merged);
+
             RemoveRedundantZones(merged, mosaic);
             RemoveCoveredOverlapZones(merged, mosaic);
-            MergeActualOverlaps(merged);
-            FitZonesInsideSlab(merged, outline, settings.SlabEdgeInsetMm);
-            RefreshZoneDimensions(merged);
+            RunUntilStable(merged, 3, () =>
+            {
+                MergeActualOverlaps(merged);
+                FitZonesInsideSlab(merged, outline, settings.SlabEdgeInsetMm);
+                RefreshZoneDimensions(merged);
+            });
             ApplyFinalEdgeFamilies(merged, settings, outline);
             SplitOverlongZones(merged, mosaic, outline, settings.SlabEdgeInsetMm);
+            // Reversed layouts can lose edge FE during final contour contraction and
+            // 11700 splitting. Recover only after every geometry-changing pass.
+            if (settings.ReverseZoneDirections)
+            {
+                for (var recoveryPass = 0; recoveryPass < 32; recoveryPass++)
+                {
+                    var before = CountUncoveredElements(merged, mosaic);
+                    if (before == 0) break;
+                    AddRecoveryZones(merged, mosaic, layer, settings, openings, outline, axes, true);
+                    if (CountUncoveredElements(merged, mosaic) >= before) break;
+                }
+                RefreshZoneDimensions(merged);
+                ApplyFinalEdgeFamilies(merged, settings, outline);
+                RemoveRedundantZones(merged, mosaic);
+                RemoveCoveredOverlapZones(merged, mosaic);
+                for (var recoveryPass = 0; recoveryPass < 32; recoveryPass++)
+                {
+                    var before = CountUncoveredElements(merged, mosaic);
+                    if (before == 0) break;
+                    AddRecoveryZones(merged, mosaic, layer, settings, openings, outline, axes, true);
+                    if (CountUncoveredElements(merged, mosaic) >= before) break;
+                }
+                RefreshZoneDimensions(merged);
+                ApplyFinalEdgeFamilies(merged, settings, outline);
+                RemoveZonesWithoutActiveCoverage(merged, mosaic);
+            }
             for (var i = 0; i < merged.Count; i++)
                 merged[i].ZoneId = i + 1;
             return merged;
         }
+
+        private static void RunUntilStable(List<AdditionalZone> zones, int maxIterations, Action pass)
+        {
+            var previous = LayoutFingerprint(zones);
+            for (var iteration = 0; iteration < maxIterations; iteration++)
+            {
+                pass();
+                var current = LayoutFingerprint(zones);
+                if (current == previous) return;
+                previous = current;
+            }
+        }
+
+        private static string LayoutFingerprint(IEnumerable<AdditionalZone> zones) => string.Join("|",
+            zones.OrderBy(z => z.Layer).ThenBy(z => z.ZoneId).Select(z =>
+            {
+                if (z.Contour.Count < 3) return $"{z.Layer}:empty";
+                return $"{z.Layer}:{z.DiameterMm}:{z.BarStepMm}:" +
+                       $"{Math.Round(z.Contour.Min(p => p.X), 4)}:{Math.Round(z.Contour.Max(p => p.X), 4)}:" +
+                       $"{Math.Round(z.Contour.Min(p => p.Y), 4)}:{Math.Round(z.Contour.Max(p => p.Y), 4)}:" +
+                       string.Join(",", z.NodeIds.OrderBy(id => id));
+            }));
 
         private static void AssignSharedZoneElements(
             List<AdditionalZone> zones, MosaicGrid mosaic)
@@ -1132,10 +1220,6 @@ namespace LiraSlabZones.Core
             if (!settings.ApplyBentRules || outline == null || outline.Count < 3)
                 return;
 
-            var minOutlineX = outline.Min(p => p.X);
-            var maxOutlineX = outline.Max(p => p.X);
-            var minOutlineY = outline.Min(p => p.Y);
-            var maxOutlineY = outline.Max(p => p.Y);
             var offsetM = UnitConversion.MmToMeters(settings.EdgeOffsetMm);
 
             foreach (var zone in zones.Where(z => z.Contour.Count >= 3))
@@ -1144,8 +1228,7 @@ namespace LiraSlabZones.Core
                 var maxX = zone.Contour.Max(p => p.X);
                 var minY = zone.Contour.Min(p => p.Y);
                 var maxY = zone.Contour.Max(p => p.Y);
-                var nearEdge = minX < minOutlineX + offsetM || maxX > maxOutlineX - offsetM ||
-                               minY < minOutlineY + offsetM || maxY > maxOutlineY - offsetM;
+                var nearEdge = RectangleNearOutline(minX, maxX, minY, maxY, outline, offsetM);
                 if (nearEdge && zone.FamilyKind == ZoneFamilyKind.Straight)
                 {
                     zone.VerticalLegMm = HoleBentRules.VerticalLegAvailableMm(
@@ -1176,7 +1259,8 @@ namespace LiraSlabZones.Core
             AnalysisSettings settings,
             IList<OpeningInfo> openings,
             IList<Point3>? outline,
-            IList<ConstructionAxis>? axes)
+            IList<ConstructionAxis>? axes,
+            bool retainOnlyCoveredIds = false)
         {
             var cellM = mosaic.CellMm / 1000.0;
             var direction = RebarTables.DirectionForLayer(layer, settings.ReverseZoneDirections);
@@ -1249,6 +1333,8 @@ namespace LiraSlabZones.Core
                     .ToList();
                 if (elementIds.Count == 0)
                     continue;
+                if (retainOnlyCoveredIds && elementIds.Count > 1)
+                    elementIds = new List<int> { elementIds[0] };
                 if (settings.MinActiveElements > 0 && elementIds.Count < settings.MinActiveElements)
                     continue;
                 var peak = component.Max(c => mosaic.Values[c.Iy][c.Ix]);
@@ -1280,10 +1366,20 @@ namespace LiraSlabZones.Core
                     .ToList();
                 if (elementBounds.Count > 0)
                 {
-                    minX = Math.Min(minX, elementBounds.Min(b => b.MinX));
-                    maxX = Math.Max(maxX, elementBounds.Max(b => b.MaxX));
-                    minY = Math.Min(minY, elementBounds.Min(b => b.MinY));
-                    maxY = Math.Max(maxY, elementBounds.Max(b => b.MaxY));
+                    if (retainOnlyCoveredIds)
+                    {
+                        minX = elementBounds.Min(b => b.MinX);
+                        maxX = elementBounds.Max(b => b.MaxX);
+                        minY = elementBounds.Min(b => b.MinY);
+                        maxY = elementBounds.Max(b => b.MaxY);
+                    }
+                    else
+                    {
+                        minX = Math.Min(minX, elementBounds.Min(b => b.MinX));
+                        maxX = Math.Max(maxX, elementBounds.Max(b => b.MaxX));
+                        minY = Math.Min(minY, elementBounds.Min(b => b.MinY));
+                        maxY = Math.Max(maxY, elementBounds.Max(b => b.MaxY));
+                    }
                 }
                 var concrete = RebarTables.NormalizeConcrete(settings.ConcreteClass);
                 var anchorageM = UnitConversion.MmToMeters(
@@ -1323,7 +1419,7 @@ namespace LiraSlabZones.Core
                     var initialMinM = UnitConversion.MmToMeters(initialMidMm - initialFamilyLengthMm / 2.0);
                     var initialMaxM = UnitConversion.MmToMeters(initialMidMm + initialFamilyLengthMm / 2.0);
                     foreach (var existingBounds in zoneBounds.Where(b =>
-                        b.Zone.Layer == layer && b.Zone.Direction == direction &&
+                        !retainOnlyCoveredIds && b.Zone.Layer == layer && b.Zone.Direction == direction &&
                         b.Zone.LengthMm >= 11700 - 1))
                     {
                         var existing = existingBounds.Zone;
@@ -1396,9 +1492,29 @@ namespace LiraSlabZones.Core
                     var beforeContourClip = (MinX: zoneMinX, MaxX: zoneMaxX, MinY: zoneMinY, MaxY: zoneMaxY);
                     var beforeConflictClip = (zoneMinX, zoneMaxX, zoneMinY, zoneMaxY);
                     if (!MeshBoundary.ClipRectToSlab(
-                        ref zoneMinX, ref zoneMaxX, ref zoneMinY, ref zoneMaxY,
-                        outline, effectiveInsetMm))
-                        continue;
+                            ref zoneMinX, ref zoneMaxX, ref zoneMinY, ref zoneMaxY,
+                            outline, effectiveInsetMm))
+                    {
+                        if (!retainOnlyCoveredIds || elementIds.Count != 1 ||
+                            !mosaic.PlateCentroids.TryGetValue(elementIds[0], out var edgeCentroid))
+                            continue;
+                        var halfCell = Math.Max(0.05, cellM / 2.0);
+                        zoneMinX = edgeCentroid.X - halfCell;
+                        zoneMaxX = edgeCentroid.X + halfCell;
+                        zoneMinY = edgeCentroid.Y - halfCell;
+                        zoneMaxY = edgeCentroid.Y + halfCell;
+                        if (!MeshBoundary.ClipRectToSlab(
+                                ref zoneMinX, ref zoneMaxX, ref zoneMinY, ref zoneMaxY,
+                                outline, 0))
+                            continue;
+                        verticalLeg = HoleBentRules.VerticalLegAvailableMm(
+                            settings.SlabThicknessMm, settings.CoverTopMm,
+                            settings.CoverBottomMm, option.DiameterMm);
+                        familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, option.DiameterMm);
+                        countInSpec = false;
+                        countBars = true;
+                        comment = "контур: локальная гнутая деталь";
+                    }
                     var conflictClipTrimmed = Math.Abs(zoneMinX - beforeConflictClip.zoneMinX) > 1e-6 ||
                                               Math.Abs(zoneMaxX - beforeConflictClip.zoneMaxX) > 1e-6 ||
                                               Math.Abs(zoneMinY - beforeConflictClip.zoneMinY) > 1e-6 ||
@@ -1428,7 +1544,6 @@ namespace LiraSlabZones.Core
                         countBars = true;
                         if (string.IsNullOrEmpty(comment)) comment = "контур: гнутая деталь";
                     }
-
                     foreach (var existingBounds in zoneBounds.Where(b =>
                         b.Zone.Layer == layer && b.Zone.Direction == direction &&
                         (Math.Abs(b.Zone.LengthMm - 11700) <= 1 ||
@@ -1517,7 +1632,7 @@ namespace LiraSlabZones.Core
                     var coreMaxY = centroids.Count > 0 ? centroids.Max(p => p.Y) :
                         elementBounds.Count > 0 ? elementBounds.Max(b => b.MaxY) : zoneMaxY;
                     foreach (var existingBounds in zoneBounds.Where(b =>
-                        b.Zone.Layer == layer && b.Zone.Direction == direction))
+                        !retainOnlyCoveredIds && b.Zone.Layer == layer && b.Zone.Direction == direction))
                     {
                         var overlapX = Math.Min(zoneMaxX, existingBounds.MaxX) - Math.Max(zoneMinX, existingBounds.MinX);
                         var overlapY = Math.Min(zoneMaxY, existingBounds.MaxY) - Math.Max(zoneMinY, existingBounds.MinY);
@@ -1579,6 +1694,37 @@ namespace LiraSlabZones.Core
                         ref zoneMinX, ref zoneMaxX, ref zoneMinY, ref zoneMaxY,
                         outline, effectiveInsetMm))
                         continue;
+
+                    if (retainOnlyCoveredIds && elementIds.Count == 1 &&
+                        mosaic.PlateCentroids.TryGetValue(elementIds[0], out var recoveryCentroid) &&
+                        !CoversPoint(zoneMinX, zoneMaxX, zoneMinY, zoneMaxY,
+                            recoveryCentroid.X, recoveryCentroid.Y))
+                    {
+                        var halfCell = Math.Max(0.05, cellM / 2.0);
+                        zoneMinX = recoveryCentroid.X - halfCell;
+                        zoneMaxX = recoveryCentroid.X + halfCell;
+                        zoneMinY = recoveryCentroid.Y - halfCell;
+                        zoneMaxY = recoveryCentroid.Y + halfCell;
+                        if (!MeshBoundary.ClipRectToSlab(
+                                ref zoneMinX, ref zoneMaxX, ref zoneMinY, ref zoneMaxY,
+                                outline, 0))
+                            continue;
+                        verticalLeg = HoleBentRules.VerticalLegAvailableMm(
+                            settings.SlabThicknessMm, settings.CoverTopMm,
+                            settings.CoverBottomMm, option.DiameterMm);
+                        familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, option.DiameterMm);
+                        countInSpec = false;
+                        countBars = true;
+                        comment = "контур: локальная гнутая деталь";
+                    }
+
+                    if (retainOnlyCoveredIds)
+                    {
+                        elementIds = elementIds.Distinct().Where(id =>
+                            mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
+                            CoversPoint(zoneMinX, zoneMaxX, zoneMinY, zoneMaxY, centroid.X, centroid.Y)).ToList();
+                        if (elementIds.Count == 0) continue;
+                    }
 
                     if (zoneMaxX - zoneMinX < 0.05 || zoneMaxY - zoneMinY < 0.05)
                         continue;
@@ -1669,6 +1815,40 @@ namespace LiraSlabZones.Core
                     zoneBounds.Add((zone, zoneMinX, zoneMaxX, zoneMinY, zoneMaxY));
                 }
             }
+        }
+
+        private static int CountUncoveredElements(List<AdditionalZone> zones, MosaicGrid mosaic)
+        {
+            var activeIds = new HashSet<int>();
+            for (var iy = 0; iy < mosaic.Ny; iy++)
+            for (var ix = 0; ix < mosaic.Nx; ix++)
+            {
+                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                foreach (var id in mosaic.PlateIds[iy][ix]) activeIds.Add(id);
+            }
+            return activeIds.Count(id => mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
+                !zones.Any(zone => zone.Contour.Count >= 3 &&
+                    CoversPoint(
+                        zone.Contour.Min(p => p.X), zone.Contour.Max(p => p.X),
+                        zone.Contour.Min(p => p.Y), zone.Contour.Max(p => p.Y),
+                        centroid.X, centroid.Y)));
+        }
+
+        private static void RemoveZonesWithoutActiveCoverage(List<AdditionalZone> zones, MosaicGrid mosaic)
+        {
+            var activeIds = new HashSet<int>();
+            for (var iy = 0; iy < mosaic.Ny; iy++)
+            for (var ix = 0; ix < mosaic.Nx; ix++)
+            {
+                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                foreach (var id in mosaic.PlateIds[iy][ix]) activeIds.Add(id);
+            }
+            zones.RemoveAll(zone => zone.Contour.Count < 3 || !activeIds.Any(id =>
+                mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
+                CoversPoint(
+                    zone.Contour.Min(p => p.X), zone.Contour.Max(p => p.X),
+                    zone.Contour.Min(p => p.Y), zone.Contour.Max(p => p.Y),
+                    centroid.X, centroid.Y)));
         }
 
         private static void MergeActualOverlaps(List<AdditionalZone> zones)
@@ -2348,13 +2528,17 @@ namespace LiraSlabZones.Core
                     var off = UnitConversion.MmToMeters(settings.EdgeOffsetMm);
                     if (direction == ZoneDirection.X)
                     {
-                        if (coreCy < (op.MinYM + op.MaxYM) / 2) maxYM = Math.Min(maxYM, op.MinYM - off);
-                        else minYM = Math.Max(minYM, op.MaxYM + off);
+                        // X-directed bars terminate at the left/right opening faces.
+                        // Keep the transverse Y centering and leave the configured gap.
+                        if (coreCx < (op.MinXM + op.MaxXM) / 2) maxXM = Math.Min(maxXM, op.MinXM - off);
+                        else minXM = Math.Max(minXM, op.MaxXM + off);
                     }
                     else
                     {
-                        if (coreCx < (op.MinXM + op.MaxXM) / 2) maxXM = Math.Min(maxXM, op.MinXM - off);
-                        else minXM = Math.Max(minXM, op.MaxXM + off);
+                        // Y-directed bars terminate at the bottom/top opening faces.
+                        // Keep the transverse X centering and leave the configured gap.
+                        if (coreCy < (op.MinYM + op.MaxYM) / 2) maxYM = Math.Min(maxYM, op.MinYM - off);
+                        else minYM = Math.Max(minYM, op.MaxYM + off);
                     }
                     if (settings.ApplyBentRules)
                     {
@@ -2370,16 +2554,10 @@ namespace LiraSlabZones.Core
 
             if (settings.ApplyBentRules && outline != null && outline.Count >= 3)
             {
-                var oMinX = outline.Min(p => p.X);
-                var oMaxX = outline.Max(p => p.X);
-                var oMinY = outline.Min(p => p.Y);
-                var oMaxY = outline.Max(p => p.Y);
                 var off = UnitConversion.MmToMeters(settings.EdgeOffsetMm);
-                // A zone can require a bent edge detail at either a longitudinal
-                // or a transverse slab edge. Restricting this by bar direction
-                // made vertical As2 zones ignore the left/right slab boundary.
-                var nearEdge = minXM < oMinX + off || maxXM > oMaxX - off ||
-                               minYM < oMinY + off || maxYM > oMaxY - off;
+                // Use the real polygon boundary. A global AABB misses rounded and
+                // stepped slab ends and leaves straight families stacked at the arc.
+                var nearEdge = RectangleNearOutline(minXM, maxXM, minYM, maxYM, outline, off);
                 if (nearEdge && familyKind == ZoneFamilyKind.Straight)
                 {
                     verticalLeg = HoleBentRules.VerticalLegAvailableMm(
@@ -2390,6 +2568,37 @@ namespace LiraSlabZones.Core
                     if (string.IsNullOrEmpty(comment)) comment = "торец: гнутая деталь";
                 }
             }
+        }
+
+        private static bool RectangleNearOutline(
+            double minX, double maxX, double minY, double maxY,
+            IList<Point3> outline, double toleranceM)
+        {
+            var tolerance = Math.Max(0.01, toleranceM) + 1e-6;
+            return DistanceToOutline(minX, minY, outline) <= tolerance ||
+                   DistanceToOutline(minX, maxY, outline) <= tolerance ||
+                   DistanceToOutline(maxX, minY, outline) <= tolerance ||
+                   DistanceToOutline(maxX, maxY, outline) <= tolerance;
+        }
+
+        private static double DistanceToOutline(double x, double y, IList<Point3> outline)
+        {
+            var best = double.MaxValue;
+            for (var i = 0; i < outline.Count; i++)
+            {
+                var a = outline[i];
+                var b = outline[(i + 1) % outline.Count];
+                var dx = b.X - a.X;
+                var dy = b.Y - a.Y;
+                var lengthSquared = dx * dx + dy * dy;
+                var t = lengthSquared <= 1e-18 ? 0 :
+                    Math.Max(0, Math.Min(1, ((x - a.X) * dx + (y - a.Y) * dy) / lengthSquared));
+                var px = a.X + t * dx;
+                var py = a.Y + t * dy;
+                var distance = Math.Sqrt((x - px) * (x - px) + (y - py) * (y - py));
+                if (distance < best) best = distance;
+            }
+            return best;
         }
 
         private static double GetAsMain(AnalysisSettings s, RebarLayer layer) => layer switch

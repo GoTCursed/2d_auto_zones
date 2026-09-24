@@ -132,26 +132,34 @@ namespace LiraSlabZones.Core
                 elev = elevationZM ?? filtered.ElevationZM;
             }
 
-            var outline = MeshBoundary.BuildOuterContour(levelPlates);
-            var detectedOpenings = SlabOpenings.Detect(levelPlates, outline);
+            var geometry = SlabGeometryCache.Get(levelPlates);
+            var outline = geometry.Outline;
+            var detectedOpenings = geometry.Openings;
             if (openings != null)
                 detectedOpenings.AddRange(openings.Where(op => !detectedOpenings.Any(existing =>
                     Math.Abs(existing.MinXM - op.MinXM) < 0.001 && Math.Abs(existing.MinYM - op.MinYM) < 0.001)));
-            var zones = ZoneLayoutEngine.Layout(levelPlates, settings, openings: detectedOpenings, outline: outline, axes: axes);
+            // The layout uses openings for avoidance. Actual polygon splitting is applied
+            // only below, after the layout has stabilized.
+            var zones = ZoneLayoutEngine.Layout(levelPlates, settings,
+                openings: detectedOpenings, outline: outline, axes: axes);
             if (settings.ApplyHoleRules && detectedOpenings.Count > 0)
             {
                 for (var i = zones.Count - 1; i >= 0; i--)
                 {
                     var zone = zones[i];
-                    if (!ZoneEditor.IntersectsOpening(zone, detectedOpenings)) continue;
                     var parts = ZoneEditor.SplitAtOpenings(zone, detectedOpenings, settings, levelPlates)
                         .Where(part => part.NodeIds.Count > 0).ToList();
-                    var conflicts = parts.Where((part, partIndex) =>
-                        parts.Skip(partIndex + 1).Any(other => ZoneEditor.HasPlacementConflict(part, other)) ||
-                        zones.Where((other, otherIndex) => otherIndex != i)
-                            .Any(other => ZoneEditor.HasPlacementConflict(part, other))).Any();
-                    if (parts.Count == 0 || zone.NodeIds.Except(parts.SelectMany(part => part.NodeIds)).Any() ||
-                        conflicts ||
+                    if (parts.Count == 1 && ReferenceEquals(parts[0], zone)) continue;
+                    var otherZones = zones.Where((other, otherIndex) => otherIndex != i).ToList();
+                    parts = parts.Where(part => !part.NodeIds.All(id => otherZones.Any(other =>
+                        other.Layer == part.Layer &&
+                        other.AsCoveredCm2PerM + 1e-6 >= part.AsCoveredCm2PerM &&
+                        other.NodeIds.Contains(id)))).ToList();
+                    ZoneEditor.EnforceRequiredGaps(parts, levelPlates);
+                    var coveredIds = parts.SelectMany(part => part.NodeIds)
+                        .Concat(otherZones.Where(other => other.Layer == zone.Layer)
+                            .SelectMany(other => other.NodeIds)).ToHashSet();
+                    if (parts.Count == 0 || zone.NodeIds.Any(id => !coveredIds.Contains(id)) ||
                         parts.Any(part => part.FamilyKind == ZoneFamilyKind.Straight &&
                             settings.MinZoneWidthM > 0 && part.WidthM + 1e-6 < settings.MinZoneWidthM))
                     {
@@ -162,9 +170,11 @@ namespace LiraSlabZones.Core
                     zones.RemoveAt(i);
                     zones.InsertRange(i, parts);
                 }
+                ZoneEditor.EnforceRequiredGaps(zones, levelPlates);
                 for (var i = 0; i < zones.Count; i++) zones[i].ZoneId = i + 1;
             }
             var stats = ComputeStats(zones, settings, outline, levelPlates);
+            var diagnostics = ZoneLayoutDiagnostics.Evaluate(levelPlates, zones, settings);
 
             return new AnalysisResult
             {
@@ -182,12 +192,40 @@ namespace LiraSlabZones.Core
                 Openings = detectedOpenings,
                 ElevationZM = elev,
                 ElevationLabel = elevationLabel ?? $"Z = {elev:F3} м",
-                Stats = stats
+                Stats = stats,
+                Diagnostics = diagnostics
             };
         }
 
         public static List<Point3> BuildOutline(IList<LiraPlateElement> plates) =>
             MeshBoundary.BuildOuterContour(plates);
+
+        public static AnalysisResult RebuildLayers(
+            AnalysisResult source, AnalysisSettings settings, IEnumerable<RebarLayer> changedLayers)
+        {
+            var changed = new HashSet<RebarLayer>(changedLayers);
+            if (changed.Count == 0) return source;
+            var localSettings = Newtonsoft.Json.JsonConvert.DeserializeObject<AnalysisSettings>(
+                Newtonsoft.Json.JsonConvert.SerializeObject(settings)) ?? settings;
+            localSettings.ShowAs1 = changed.Contains(RebarLayer.As1) && settings.ShowAs1;
+            localSettings.ShowAs2 = changed.Contains(RebarLayer.As2) && settings.ShowAs2;
+            localSettings.ShowAs3 = changed.Contains(RebarLayer.As3) && settings.ShowAs3;
+            localSettings.ShowAs4 = changed.Contains(RebarLayer.As4) && settings.ShowAs4;
+
+            var rebuilt = BuildResult(source.DocumentName, source.DocumentPath, source.NodeCount,
+                source.Plates, localSettings, source.Axes, source.ElevationZM, source.ElevationLabel,
+                skipLevelFilter: true, openings: source.Openings);
+            rebuilt.Zones = source.Zones.Where(zone => !changed.Contains(zone.Layer))
+                .Concat(rebuilt.Zones).ToList();
+            for (var i = 0; i < rebuilt.Zones.Count; i++) rebuilt.Zones[i].ZoneId = i + 1;
+            rebuilt.Settings = settings;
+            rebuilt.AllPlates = source.AllPlates;
+            rebuilt.AvailableLevels = source.AvailableLevels;
+            rebuilt.UnitsNote = source.UnitsNote;
+            rebuilt.Stats = ComputeStats(rebuilt.Zones, settings, rebuilt.Outline, rebuilt.Plates);
+            rebuilt.Diagnostics = ZoneLayoutDiagnostics.Evaluate(rebuilt.Plates, rebuilt.Zones, settings);
+            return rebuilt;
+        }
 
         /// <summary>Старый режим: 1 зона = 1 КЭ (для отладки изополей).</summary>
         public static List<AdditionalZone> BuildZones(IEnumerable<LiraPlateElement> plates, AnalysisSettings settings) =>

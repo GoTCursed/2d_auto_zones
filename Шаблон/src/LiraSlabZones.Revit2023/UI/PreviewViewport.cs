@@ -10,6 +10,7 @@ using Newtonsoft.Json;
 namespace LiraSlabZones.Revit2023.UI
 {
     public enum ZoneEditMode { Select, Move, Resize, Create, Split, Merge, Delete, PerpendicularToEdge, CreateGap }
+    public enum DiagnosticFilter { All, Uncovered, ZoneErrors, Conflicts, Off }
 
     /// <summary>
     /// Векторный превью-холст: зум без размытия, зоны и контур по сетке КЭ.
@@ -25,6 +26,7 @@ namespace LiraSlabZones.Revit2023.UI
         private bool _showMesh = true;
         private bool _showIso;
         private bool _showAxes;
+        private DiagnosticFilter _diagnosticFilter = DiagnosticFilter.All;
 
         private double _zoom = 1.0;
         private double _panX;
@@ -68,6 +70,12 @@ namespace LiraSlabZones.Revit2023.UI
         public event Action<AdditionalZone>? ZoneSelected;
         public event Action? ZonesEdited;
         public event Action<string>? StatusChanged;
+
+        public void SetDiagnosticFilter(DiagnosticFilter filter)
+        {
+            _diagnosticFilter = filter;
+            InvalidateVisual();
+        }
 
         private static readonly Brush Bg = Brushes.White;
         private static readonly Pen OutlinePen = FreezePen(Color.FromRgb(29, 78, 216), 2.0, dash: true);
@@ -351,6 +359,35 @@ namespace LiraSlabZones.Revit2023.UI
             }
 
             // зоны доп.армирования поверх сетки
+            var diagnostics = _result.Diagnostics ?? new ZoneDiagnostics();
+            bool showUncovered = _diagnosticFilter == DiagnosticFilter.All ||
+                _diagnosticFilter == DiagnosticFilter.Uncovered;
+            bool showZoneErrors = _diagnosticFilter == DiagnosticFilter.All ||
+                _diagnosticFilter == DiagnosticFilter.ZoneErrors;
+            bool showConflicts = _diagnosticFilter == DiagnosticFilter.All ||
+                _diagnosticFilter == DiagnosticFilter.Conflicts;
+            var uncoveredIds = new HashSet<int>(diagnostics.Issues
+                .Where(issue => showUncovered && issue.Kind == ZoneIssueKind.UncoveredElement)
+                .Select(issue => issue.ElementId));
+            if (uncoveredIds.Count > 0)
+            {
+                var issueFill = new SolidColorBrush(Color.FromArgb(105, 219, 39, 119));
+                var issuePen = new Pen(Brushes.DeepPink, Math.Max(1e-4, 2.0 / s));
+                issueFill.Freeze(); issuePen.Freeze();
+                for (var i = 0; i < _result.Plates.Count; i++)
+                    if (uncoveredIds.Contains(_result.Plates[i].Id) &&
+                        _plateShapes[i].Intersects(vMinX, vMaxX, vMinY, vMaxY))
+                        dc.DrawGeometry(issueFill, issuePen, _plateShapes[i].Geometry);
+            }
+
+            var errorZoneIds = new HashSet<int>(diagnostics.Issues
+                .Where(issue => showZoneErrors && (issue.Kind == ZoneIssueKind.EmptyZone ||
+                                issue.Kind == ZoneIssueKind.InvalidZone ||
+                                issue.Kind == ZoneIssueKind.OverlongBar))
+                .Select(issue => issue.ZoneId));
+            var conflictZoneIds = new HashSet<int>(diagnostics.Issues
+                .Where(issue => showConflicts && issue.Kind == ZoneIssueKind.PlacementConflict)
+                .Select(issue => issue.ZoneId));
             drawn = 0;
             bool labels = _zoom >= 1.6;
             bool dims = _zoom >= 1.5;
@@ -367,8 +404,10 @@ namespace LiraSlabZones.Revit2023.UI
 
                 var fill = DiameterFill(zone.DiameterMm, 70);
                 bool selected = _selectedZoneId == zone.ZoneId;
+                var diagnosticStroke = errorZoneIds.Contains(zone.ZoneId) ? Brushes.Red :
+                    conflictZoneIds.Contains(zone.ZoneId) ? Brushes.DarkOrange : DiameterStroke(zone.DiameterMm);
                 var zoneOutline = new Pen(
-                    selected ? Brushes.Black : DiameterStroke(zone.DiameterMm),
+                    selected ? Brushes.Black : diagnosticStroke,
                     Math.Max(1e-4, (selected ? 2.2 : 1.35) / s))
                 {
                     DashStyle = DashStyles.Dash
@@ -449,6 +488,16 @@ namespace LiraSlabZones.Revit2023.UI
             dc.DrawText(new FormattedText("Y", System.Globalization.CultureInfo.CurrentCulture,
                 FlowDirection.LeftToRight, face, 13, Brushes.DarkSlateGray, 1),
                 new Point(origin.X - 5, origin.Y - 51));
+
+            var firstDirection = RebarTables.DirectionForLayer(
+                RebarLayer.As1, _settings.ReverseZoneDirections);
+            var secondDirection = RebarTables.DirectionForLayer(
+                RebarLayer.As2, _settings.ReverseZoneDirections);
+            var layoutText = $"Раскладка: As1/As3 вдоль {firstDirection}  ·  As2/As4 вдоль {secondDirection}";
+            dc.DrawText(new FormattedText(layoutText,
+                System.Globalization.CultureInfo.CurrentCulture,
+                FlowDirection.LeftToRight, face, 12, Brushes.DarkSlateGray, 1),
+                new Point(origin.X + 50, origin.Y - 18));
         }
 
         private void DrawDiameterLegend(DrawingContext dc)
@@ -788,8 +837,14 @@ namespace LiraSlabZones.Revit2023.UI
                         _result.Zones.RemoveAt(index);
                         _result.Zones.InsertRange(index, pieces);
                         CommitEdits(pieces[0]);
+                        SetEditMode(ZoneEditMode.Select);
+                        RaiseStatus("Зона разделена перпендикулярно грани; режим выбора восстановлен");
                     }
-                    else RaiseStatus("Разрез должен проходить внутри зоны, на расстоянии от края");
+                    else
+                    {
+                        SetEditMode(ZoneEditMode.Select);
+                        RaiseStatus("Разрез не выполнен; режим выбора восстановлен");
+                    }
                 }
                 else if (_editMode == ZoneEditMode.CreateGap && hit != null)
                 {
@@ -953,6 +1008,7 @@ namespace LiraSlabZones.Revit2023.UI
                 _pendingUndo = null;
             }
             for (var i = 0; i < _result.Zones.Count; i++) _result.Zones[i].ZoneId = i + 1;
+            _result.Diagnostics = ZoneLayoutDiagnostics.Evaluate(_result.Plates, _result.Zones, _settings);
             RebuildZoneGeometryCache();
             _selectedZoneId = keepSelected?.ZoneId;
             if (keepSelected != null) ZoneSelected?.Invoke(keepSelected);

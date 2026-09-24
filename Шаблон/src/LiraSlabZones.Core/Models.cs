@@ -219,6 +219,7 @@ namespace LiraSlabZones.Core
         public string ElevationLabel { get; set; } = string.Empty;
 
         public PreviewStats Stats { get; set; } = new PreviewStats();
+        public ZoneDiagnostics Diagnostics { get; set; } = new ZoneDiagnostics();
     }
 
     public sealed class PreviewStats

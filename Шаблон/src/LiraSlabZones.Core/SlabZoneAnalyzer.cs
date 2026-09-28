@@ -144,6 +144,8 @@ namespace LiraSlabZones.Core
                 openings: detectedOpenings, outline: outline, axes: axes);
             if (settings.ApplyHoleRules && detectedOpenings.Count > 0)
             {
+                if (settings.ReverseZoneDirections)
+                    ZoneEditor.MergeLongitudinalConflicts(zones, outline);
                 for (var i = zones.Count - 1; i >= 0; i--)
                 {
                     var zone = zones[i];
@@ -151,28 +153,70 @@ namespace LiraSlabZones.Core
                         .Where(part => part.NodeIds.Count > 0).ToList();
                     if (parts.Count == 1 && ReferenceEquals(parts[0], zone)) continue;
                     var otherZones = zones.Where((other, otherIndex) => otherIndex != i).ToList();
-                    parts = parts.Where(part => !part.NodeIds.All(id => otherZones.Any(other =>
-                        other.Layer == part.Layer &&
-                        other.AsCoveredCm2PerM + 1e-6 >= part.AsCoveredCm2PerM &&
-                        other.NodeIds.Contains(id)))).ToList();
+                    parts = parts.Where(part => !otherZones.Any(other =>
+                    {
+                        if (other.Layer != part.Layer ||
+                            other.AsCoveredCm2PerM + 1e-6 < part.AsCoveredCm2PerM ||
+                            !part.NodeIds.All(other.NodeIds.Contains) ||
+                            part.Contour.Count < 3 || other.Contour.Count < 3)
+                            return false;
+                        const double toleranceM = 0.001;
+                        return other.Contour.Min(point => point.X) <= part.Contour.Min(point => point.X) + toleranceM &&
+                               other.Contour.Max(point => point.X) >= part.Contour.Max(point => point.X) - toleranceM &&
+                               other.Contour.Min(point => point.Y) <= part.Contour.Min(point => point.Y) + toleranceM &&
+                               other.Contour.Max(point => point.Y) >= part.Contour.Max(point => point.Y) - toleranceM;
+                    })).ToList();
+                    ZoneEditor.AbsorbNarrowSplitParts(parts, settings.MinZoneWidthM);
                     ZoneEditor.EnforceRequiredGaps(parts, levelPlates);
                     var coveredIds = parts.SelectMany(part => part.NodeIds)
                         .Concat(otherZones.Where(other => other.Layer == zone.Layer)
                             .SelectMany(other => other.NodeIds)).ToHashSet();
-                    if (parts.Count == 0 || zone.NodeIds.Any(id => !coveredIds.Contains(id)) ||
-                        parts.Any(part => part.FamilyKind == ZoneFamilyKind.Straight &&
-                            settings.MinZoneWidthM > 0 && part.WidthM + 1e-6 < settings.MinZoneWidthM))
+                    var uncoveredIds = zone.NodeIds.Where(id => !coveredIds.Contains(id)).ToList();
+                    var narrowParts = parts.Where(part =>
+                        part.FamilyKind == ZoneFamilyKind.Straight &&
+                        settings.MinZoneWidthM > 0 &&
+                        part.WidthM + 1e-6 < settings.MinZoneWidthM).ToList();
+                    var removableSlivers = narrowParts.Where(sliver => sliver.NodeIds.All(id =>
+                        parts.Any(part => !ReferenceEquals(part, sliver) &&
+                            part.Layer == sliver.Layer &&
+                            part.AsCoveredCm2PerM + 1e-6 >= sliver.AsCoveredCm2PerM &&
+                            part.NodeIds.Contains(id)) ||
+                        otherZones.Any(other => other.Layer == sliver.Layer &&
+                            other.AsCoveredCm2PerM + 1e-6 >= sliver.AsCoveredCm2PerM &&
+                            other.NodeIds.Contains(id)))).ToList();
+                    if (removableSlivers.Count > 0)
+                    {
+                        parts.RemoveAll(removableSlivers.Contains);
+                        narrowParts = narrowParts.Except(removableSlivers).ToList();
+                        coveredIds = parts.SelectMany(part => part.NodeIds)
+                            .Concat(otherZones.Where(other => other.Layer == zone.Layer)
+                                .SelectMany(other => other.NodeIds)).ToHashSet();
+                        uncoveredIds = zone.NodeIds.Where(id => !coveredIds.Contains(id)).ToList();
+                    }
+                    if (parts.Count == 0 || uncoveredIds.Count > 0 || narrowParts.Count > 0)
                     {
                         zone.StatusColor = "warn";
-                        zone.Comment = "отверстие: разделение не сохранило покрытие КЭ";
+                        var narrowDescription = string.Join(",", narrowParts.Select(part =>
+                            $"{part.WidthMm:0}мм/{part.NodeIds.Count}КЭ"));
+                        zone.Comment = $"отверстие: разделение отклонено; частей={parts.Count}; " +
+                                       $"непокрытых КЭ={uncoveredIds.Count}; " +
+                                       $"узких частей={narrowParts.Count} [{narrowDescription}]";
                         continue;
                     }
                     zones.RemoveAt(i);
                     zones.InsertRange(i, parts);
                 }
+                foreach (var normalized in zones)
+                    normalized.Direction = RebarTables.DirectionForLayer(
+                        normalized.Layer, settings.ReverseZoneDirections);
+                if (settings.ReverseZoneDirections)
+                    ZoneEditor.MergeDominatedOpeningExtensions(zones);
                 ZoneEditor.EnforceRequiredGaps(zones, levelPlates);
                 for (var i = 0; i < zones.Count; i++) zones[i].ZoneId = i + 1;
             }
+            ZoneEditor.EnforceMaximumDetailLength(zones, levelPlates, outline);
+            ZoneEditor.NormalizeWidthsToBarStep(zones, levelPlates, outline);
+            for (var i = 0; i < zones.Count; i++) zones[i].ZoneId = i + 1;
             var stats = ComputeStats(zones, settings, outline, levelPlates);
             var diagnostics = ZoneLayoutDiagnostics.Evaluate(levelPlates, zones, settings);
 

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LiraSlabZones.Revit2026")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+191b3922ef3135902d45005fb78531de71483273")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c2d7a77be05e828c4b9f3b2edd98834aa10eb73")]
 [assembly: System.Reflection.AssemblyProductAttribute("LiraSlabZones.Revit2026")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LiraSlabZones.Revit2026")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

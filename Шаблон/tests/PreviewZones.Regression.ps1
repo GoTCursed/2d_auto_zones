@@ -1,8 +1,12 @@
-param([string]$InputJson)
+param(
+    [string]$InputJson,
+    [ValidateSet('Debug', 'Release')]
+    [string]$Configuration = 'Debug'
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$build = Join-Path $root 'src\LiraSlabZones.PreviewHost\bin\x64\Debug\net48'
+$build = Join-Path $root "src\LiraSlabZones.PreviewHost\bin\x64\$Configuration\net48"
 Add-Type -AssemblyName PresentationCore, PresentationFramework, WindowsBase
 Add-Type -Path (Join-Path $build 'Newtonsoft.Json.dll')
 Add-Type -Path (Join-Path $build 'Clipper2Lib.dll')
@@ -17,6 +21,10 @@ function Assert-ZoneRules($zones, [int]$backgroundDiameter) {
     foreach ($zone in $zones) {
         Assert ($zone.DiameterMm -ge $backgroundDiameter) "Zone $($zone.ZoneId) diameter is below background."
         Assert ($zone.BarStepMm -in @(100, 200)) "Zone $($zone.ZoneId) has unsupported spacing."
+        $ruleX = $zone.Contour.X | Measure-Object -Minimum -Maximum
+        $ruleY = $zone.Contour.Y | Measure-Object -Minimum -Maximum
+        Assert ($zone.LengthMm -le 11701) `
+            "Zone $($zone.ZoneId) ($($zone.Layer)/$($zone.Direction)/$($zone.FamilyKind)) detail length exceeds 11700 mm: $($zone.LengthMm); X=$($ruleX.Minimum)..$($ruleX.Maximum); Y=$($ruleY.Minimum)..$($ruleY.Maximum); $($zone.Comment)"
         $actualLengthMm = if ($zone.Direction -eq [LiraSlabZones.Core.ZoneDirection]::X) {
             (($zone.Contour.X | Measure-Object -Maximum).Maximum - ($zone.Contour.X | Measure-Object -Minimum).Minimum) * 1000
         } else {
@@ -275,7 +283,8 @@ function Assert-ZonesInsideOutline($zones, $outline) {
         foreach ($point in $zone.Contour) {
             $x = $point.X + ($zone.Placement.X - $point.X) * 0.001
             $y = $point.Y + ($zone.Placement.Y - $point.Y) * 0.001
-            Assert ([LiraSlabZones.Core.MeshBoundary]::PointInPolygon($x, $y, $outline)) "Zone $($zone.ZoneId) extends outside the slab outline."
+            Assert ([LiraSlabZones.Core.MeshBoundary]::PointInPolygon($x, $y, $outline)) `
+                "Zone $($zone.ZoneId) ($($zone.Layer)/$($zone.Direction)/$($zone.FamilyKind), L=$($zone.LengthMm)) extends outside the slab outline at ($($point.X),$($point.Y))."
         }
     }
 }
@@ -678,6 +687,17 @@ if ($InputJson) {
         $knownIds = @($layerZones | ForEach-Object { $_.NodeIds } | Select-Object -Unique)
         $uncoveredKnown = @($uncovered | Where-Object { $_.Id -in $knownIds })
         Write-Host "Z=29.450 uncovered IDs referenced by zones: $($uncoveredKnown.Count)/$($uncovered.Count); zones: $($layerZones.Count)"
+        $sample = $uncovered | Select-Object -First 1
+        $nearby = @($layerZones | Where-Object {
+            $zx = $_.Contour.X | Measure-Object -Minimum -Maximum
+            $zy = $_.Contour.Y | Measure-Object -Minimum -Maximum
+            $sample.Centroid.X -ge $zx.Minimum - 1 -and $sample.Centroid.X -le $zx.Maximum + 1
+        } | ForEach-Object {
+            $zx = $_.Contour.X | Measure-Object -Minimum -Maximum
+            $zy = $_.Contour.Y | Measure-Object -Minimum -Maximum
+            "#$($_.ZoneId) $($_.FamilyKind) L=$($_.LengthMm) X=$($zx.Minimum)..$($zx.Maximum) Y=$($zy.Minimum)..$($zy.Maximum)"
+        })
+        Write-Host ('Nearby zones: ' + ($nearby -join '; '))
     }
     Assert ($uncovered.Count -eq 0) "Z=29.450 As2 has $($uncovered.Count) colored FE without zones."
     $bentEdgeAs2 = @($layerZones | Where-Object {
@@ -723,6 +743,24 @@ if ($InputJson) {
         }
     }
     Assert ($closeEndPairs -eq 0) "Reversed As2 has $closeEndPairs end-to-end pairs closer than their bar spacing."
+    $manualReferenceBands = @($reversedZones | Where-Object {
+        $zx = $_.Contour.X | Measure-Object -Minimum -Maximum
+        $zy = $_.Contour.Y | Measure-Object -Minimum -Maximum
+        $_.DiameterMm -eq 20 -and $_.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::Straight -and
+        $zx.Maximum -gt 20 -and $zx.Minimum -lt 26 -and
+        $zy.Maximum -gt 29 -and $zy.Minimum -lt 37
+    } | Sort-Object { ($_.Contour.Y | Measure-Object -Minimum).Minimum })
+    Assert ($manualReferenceBands.Count -ge 4) `
+        "Manual-reference opening region collapsed to $($manualReferenceBands.Count) bands instead of at least four."
+    foreach ($band in $manualReferenceBands) {
+        $roundedLength = [int][Math]::Round($band.LengthMm)
+        Assert ($roundedLength -in [LiraSlabZones.Core.RebarTables]::Sum3FamilyLengthsMm) `
+            "Manual-reference zone $($band.ZoneId) uses non-standard SUM-30 length $roundedLength mm."
+        $widthRemainder = [Math]::Abs($band.WidthMm % $band.BarStepMm)
+        Assert ($widthRemainder -le 1 -or [Math]::Abs($band.BarStepMm - $widthRemainder) -le 1) `
+            "Manual-reference zone $($band.ZoneId) width $($band.WidthMm) is not a multiple of step $($band.BarStepMm)."
+    }
+    Write-Host "PASS manual-reference topology: $($manualReferenceBands.Count) bands with calculated standard lengths and step-multiple widths"
     Write-Host "PASS reversed Z=29.450 As2: $($reversedZones.Count) X-directed zones cover all FE without empty zones"
 
 }

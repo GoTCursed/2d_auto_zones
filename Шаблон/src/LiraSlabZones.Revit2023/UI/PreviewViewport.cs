@@ -325,6 +325,9 @@ namespace LiraSlabZones.Revit2023.UI
                 drawn = 0;
                 bool isoLabels = _zoom >= 1.6;
                 var isoTypeface = new Typeface("Segoe UI");
+                var isoBrushes = new Brush?[26];
+                var isoLabelBrush = new SolidColorBrush(Color.FromArgb(220, 20, 20, 20));
+                isoLabelBrush.Freeze();
                 for (var i = 0; i < _result.Plates.Count; i++)
                 {
                     var plate = _result.Plates[i];
@@ -336,9 +339,15 @@ namespace LiraSlabZones.Revit2023.UI
                     var asAdd = IsoAdditionalAs(plate.Rebar, _settings);
                     if (asAdd <= 0.01) continue;
 
-                    var rgb = IsoColorScale.ColorForValue(asAdd, step);
-                    var brush = new SolidColorBrush(Color.FromArgb(160, rgb.R, rgb.G, rgb.B));
-                    brush.Freeze();
+                    var level = IsoColorScale.LevelForValue(asAdd, step);
+                    var brush = isoBrushes[level];
+                    if (brush == null)
+                    {
+                        var rgb = IsoColorScale.ColorForValue(asAdd, step);
+                        brush = new SolidColorBrush(Color.FromArgb(160, rgb.R, rgb.G, rgb.B));
+                        brush.Freeze();
+                        isoBrushes[level] = brush;
+                    }
                     dc.DrawGeometry(brush, null, shape.Geometry);
 
                     if (isoLabels && drawn <= 4000)
@@ -351,7 +360,7 @@ namespace LiraSlabZones.Revit2023.UI
                             FlowDirection.LeftToRight,
                             isoTypeface,
                             fontModel,
-                            new SolidColorBrush(Color.FromArgb(220, 20, 20, 20)),
+                            isoLabelBrush,
                             1.0);
                         DrawUprightText(dc, ft, tc);
                     }
@@ -1008,7 +1017,8 @@ namespace LiraSlabZones.Revit2023.UI
                 _pendingUndo = null;
             }
             for (var i = 0; i < _result.Zones.Count; i++) _result.Zones[i].ZoneId = i + 1;
-            _result.Diagnostics = ZoneLayoutDiagnostics.Evaluate(_result.Plates, _result.Zones, _settings);
+            _result.Diagnostics = ZoneLayoutDiagnostics.Evaluate(
+                _result.Plates, _result.Zones, _settings, 0, true, _result.Outline, _result.Openings);
             RebuildZoneGeometryCache();
             _selectedZoneId = keepSelected?.ZoneId;
             if (keepSelected != null) ZoneSelected?.Invoke(keepSelected);

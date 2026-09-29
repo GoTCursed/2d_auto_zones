@@ -144,6 +144,7 @@ namespace LiraSlabZones.Core
                 openings: detectedOpenings, outline: outline, axes: axes);
             if (settings.ApplyHoleRules && detectedOpenings.Count > 0)
             {
+                var platesById = levelPlates.ToDictionary(plate => plate.Id);
                 if (settings.ReverseZoneDirections)
                     ZoneEditor.MergeLongitudinalConflicts(zones, outline);
                 for (var i = zones.Count - 1; i >= 0; i--)
@@ -167,11 +168,11 @@ namespace LiraSlabZones.Core
                                other.Contour.Max(point => point.Y) >= part.Contour.Max(point => point.Y) - toleranceM;
                     })).ToList();
                     ZoneEditor.AbsorbNarrowSplitParts(parts, settings.MinZoneWidthM);
-                    ZoneEditor.EnforceRequiredGaps(parts, levelPlates);
-                    var coveredIds = parts.SelectMany(part => part.NodeIds)
-                        .Concat(otherZones.Where(other => other.Layer == zone.Layer)
-                            .SelectMany(other => other.NodeIds)).ToHashSet();
-                    var uncoveredIds = zone.NodeIds.Where(id => !coveredIds.Contains(id)).ToList();
+                    ZoneEditor.EnforceRequiredGaps(parts, levelPlates, settings, outline, detectedOpenings);
+                    var splitCoverageZones = parts.Concat(otherZones
+                        .Where(other => other.Layer == zone.Layer)).ToList();
+                    var uncoveredIds = FindUncoveredZoneElements(
+                        zone, splitCoverageZones, platesById, settings, outline, detectedOpenings);
                     var narrowParts = parts.Where(part =>
                         part.FamilyKind == ZoneFamilyKind.Straight &&
                         settings.MinZoneWidthM > 0 &&
@@ -188,10 +189,10 @@ namespace LiraSlabZones.Core
                     {
                         parts.RemoveAll(removableSlivers.Contains);
                         narrowParts = narrowParts.Except(removableSlivers).ToList();
-                        coveredIds = parts.SelectMany(part => part.NodeIds)
-                            .Concat(otherZones.Where(other => other.Layer == zone.Layer)
-                                .SelectMany(other => other.NodeIds)).ToHashSet();
-                        uncoveredIds = zone.NodeIds.Where(id => !coveredIds.Contains(id)).ToList();
+                        splitCoverageZones = parts.Concat(otherZones
+                            .Where(other => other.Layer == zone.Layer)).ToList();
+                        uncoveredIds = FindUncoveredZoneElements(
+                            zone, splitCoverageZones, platesById, settings, outline, detectedOpenings);
                     }
                     if (parts.Count == 0 || uncoveredIds.Count > 0 || narrowParts.Count > 0)
                     {
@@ -211,14 +212,29 @@ namespace LiraSlabZones.Core
                         normalized.Layer, settings.ReverseZoneDirections);
                 if (settings.ReverseZoneDirections)
                     ZoneEditor.MergeDominatedOpeningExtensions(zones);
-                ZoneEditor.EnforceRequiredGaps(zones, levelPlates);
+                ZoneEditor.EnforceRequiredGaps(zones, levelPlates, settings, outline, detectedOpenings);
                 for (var i = 0; i < zones.Count; i++) zones[i].ZoneId = i + 1;
             }
+            ZoneEditor.EnsureAssignedCapacity(zones, levelPlates, settings);
             ZoneEditor.EnforceMaximumDetailLength(zones, levelPlates, outline);
-            ZoneEditor.NormalizeWidthsToBarStep(zones, levelPlates, outline);
+            ZoneEditor.NormalizeWidthsToBarStep(zones, levelPlates, outline, settings);
+            ZoneEditor.EnforceRequiredGaps(zones, levelPlates, settings, outline, detectedOpenings);
+            ZoneEditor.RemoveCoveredOverlapZones(zones, levelPlates, settings, outline, detectedOpenings);
+            ZoneEditor.EnforceRequiredGaps(zones, levelPlates, settings, outline, detectedOpenings);
+            for (var repairPass = 0; repairPass < 2; repairPass++)
+            {
+                ZoneEditor.CloseUncoveredStepGaps(zones, levelPlates, settings, outline, detectedOpenings);
+                ZoneLayoutEngine.ResolveFinalIntersections(zones, levelPlates, settings, outline);
+                ZoneEditor.RemoveCoveredOverlapZones(zones, levelPlates, settings, outline, detectedOpenings);
+                ZoneEditor.EnforceRequiredGaps(zones, levelPlates, settings, outline, detectedOpenings);
+            }
+            // Late gap/overlap repairs can add FE IDs to zones, so audit capacity once more.
+            ZoneEditor.EnsureAssignedCapacity(zones, levelPlates, settings);
+            ZoneEditor.NormalizeBarArrayWidthsToStep(zones);
             for (var i = 0; i < zones.Count; i++) zones[i].ZoneId = i + 1;
             var stats = ComputeStats(zones, settings, outline, levelPlates);
-            var diagnostics = ZoneLayoutDiagnostics.Evaluate(levelPlates, zones, settings);
+            var diagnostics = ZoneLayoutDiagnostics.Evaluate(
+                levelPlates, zones, settings, 0, true, outline, detectedOpenings);
 
             return new AnalysisResult
             {
@@ -240,6 +256,36 @@ namespace LiraSlabZones.Core
                 Diagnostics = diagnostics
             };
         }
+
+        private static List<int> FindUncoveredZoneElements(
+            AdditionalZone sourceZone, IList<AdditionalZone> coverageZones,
+            IReadOnlyDictionary<int, LiraPlateElement> platesById, AnalysisSettings settings,
+            IList<Point3>? slabOutline = null, IList<OpeningInfo>? openings = null)
+        {
+            var sameLayerZones = coverageZones
+                .Where(candidate => candidate.Layer == sourceZone.Layer).ToList();
+            return sourceZone.NodeIds.Distinct().Where(id =>
+            {
+                if (!platesById.TryGetValue(id, out var plate)) return true;
+                if (!plate.Rebar.Ok)
+                    return !sameLayerZones.Any(candidate => candidate.NodeIds.Contains(id));
+
+                var requiredAs = plate.Rebar.Get(sourceZone.Layer) - BackgroundAs(settings, sourceZone.Layer);
+                if (requiredAs <= 0.01) return false;
+
+                return !ZoneCoverageRules.CoversOrBridgesGap(
+                    sameLayerZones, plate, sourceZone.Layer, requiredAs, slabOutline, openings);
+            }).ToList();
+        }
+
+        private static double BackgroundAs(AnalysisSettings settings, RebarLayer layer) => layer switch
+        {
+            RebarLayer.As1 => settings.AsMainAs1,
+            RebarLayer.As2 => settings.AsMainAs2,
+            RebarLayer.As3 => settings.AsMainAs3,
+            RebarLayer.As4 => settings.AsMainAs4,
+            _ => 0
+        };
 
         public static List<Point3> BuildOutline(IList<LiraPlateElement> plates) =>
             MeshBoundary.BuildOuterContour(plates);
@@ -267,7 +313,8 @@ namespace LiraSlabZones.Core
             rebuilt.AvailableLevels = source.AvailableLevels;
             rebuilt.UnitsNote = source.UnitsNote;
             rebuilt.Stats = ComputeStats(rebuilt.Zones, settings, rebuilt.Outline, rebuilt.Plates);
-            rebuilt.Diagnostics = ZoneLayoutDiagnostics.Evaluate(rebuilt.Plates, rebuilt.Zones, settings);
+            rebuilt.Diagnostics = ZoneLayoutDiagnostics.Evaluate(
+                rebuilt.Plates, rebuilt.Zones, settings, 0, true, rebuilt.Outline, rebuilt.Openings);
             return rebuilt;
         }
 

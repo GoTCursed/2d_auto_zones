@@ -56,6 +56,38 @@ namespace LiraSlabZones.Core
             return zones;
         }
 
+        public static void ResolveFinalIntersections(
+            IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
+            AnalysisSettings settings, IList<Point3> outline)
+        {
+            if (zones.Count < 2 || plates.Count == 0) return;
+            var levelZM = plates.Average(plate => plate.Centroid.Z);
+            foreach (RebarLayer layer in Enum.GetValues(typeof(RebarLayer)))
+            {
+                var layerZones = zones.Where(zone => zone.Layer == layer).ToList();
+                if (layerZones.Count < 2) continue;
+                var asMain = layer switch
+                {
+                    RebarLayer.As1 => settings.AsMainAs1,
+                    RebarLayer.As2 => settings.AsMainAs2,
+                    RebarLayer.As3 => settings.AsMainAs3,
+                    RebarLayer.As4 => settings.AsMainAs4,
+                    _ => 0
+                };
+                var mosaic = MosaicBuilder.Build(plates, layer, asMain,
+                    Math.Max(100, settings.GridCellMm), levelZM);
+                if (mosaic.Nx == 0 || mosaic.Ny == 0) continue;
+
+                PartitionInvalidOverlaps(layerZones, mosaic, outline);
+                RemoveCoveredOverlapZones(layerZones, mosaic);
+                RemoveZonesWithoutActiveCoverage(layerZones, mosaic);
+
+                for (var i = zones.Count - 1; i >= 0; i--)
+                    if (zones[i].Layer == layer) zones.RemoveAt(i);
+                foreach (var zone in layerZones) zones.Add(zone);
+            }
+        }
+
         private static List<AdditionalZone> LayoutLayer(
             MosaicGrid mosaic,
             RebarLayer layer,
@@ -101,14 +133,6 @@ namespace LiraSlabZones.Core
             {
                 if (assigned[iy0, ix0]) continue;
 
-                var backgroundDiameter = GetBackgroundDiameter(settings, layer);
-                var barOption = BarCapacity.SelectDiameterAndStep(
-                    vPeak, maxD, backgroundDiameter, settings.UseBarStep100,
-                    settings.ExcludedZoneDiametersMm?.ToArray());
-                var dZone = barOption.DiameterMm;
-                var step = barOption.StepMm;
-                if (dZone <= 0) continue;
-
                 // В режиме Min весь положительный связный диапазон образует одно пятно.
                 // На остальных ступенях сохраняется градация относительно локального пика.
                 var aThr = detailStep == DetailOptimizer.StepCount - 1
@@ -117,19 +141,39 @@ namespace LiraSlabZones.Core
                 var activeRegion = GrowConnectedRegion(
                     values, assigned, ix0, iy0, aThr,
                     out var iLeft, out var iRight, out var jDown, out var jUp);
+                // Smoothing may lower an isolated peak for region grouping, but must not
+                // lower the bar capacity selected for the finite elements in that region.
+                var requiredPeakAs = activeRegion.Max(cell => mosaic.Values[cell.Iy][cell.Ix]);
+                var backgroundDiameter = GetBackgroundDiameter(settings, layer);
+                var barOption = BarCapacity.SelectDiameterAndStep(
+                    requiredPeakAs, maxD, backgroundDiameter, settings.UseBarStep100,
+                    settings.ExcludedZoneDiametersMm?.ToArray());
+                var dZone = barOption.DiameterMm;
+                var step = barOption.StepMm;
+                if (dZone <= 0) continue;
 
                 // Считаем уникальные окрашенные КЭ, а не ячейки регулярной мозаики:
                 // один крупный/треугольный КЭ может занимать несколько ячеек.
-                var activeElementCount = activeRegion
+                var elementIds = activeRegion
                     .SelectMany(c => mosaic.PlateIds[c.Iy][c.Ix])
                     .Distinct()
-                    .Count();
+                    .ToList();
+                var activeElementCount = elementIds.Count;
                 if (minFe > 0 && activeElementCount < minFe) continue;
 
                 var x0 = mosaic.OriginXM + iLeft * (cellMm / 1000.0);
                 var x1 = mosaic.OriginXM + (iRight + 1) * (cellMm / 1000.0);
                 var y0 = mosaic.OriginYM + jDown * (cellMm / 1000.0);
                 var y1 = mosaic.OriginYM + (jUp + 1) * (cellMm / 1000.0);
+                var elementBounds = elementIds.Where(mosaic.PlateBounds.ContainsKey)
+                    .Select(id => mosaic.PlateBounds[id]).ToList();
+                if (elementBounds.Count > 0)
+                {
+                    x0 = Math.Min(x0, elementBounds.Min(bounds => bounds.MinX));
+                    x1 = Math.Max(x1, elementBounds.Max(bounds => bounds.MaxX));
+                    y0 = Math.Min(y0, elementBounds.Min(bounds => bounds.MinY));
+                    y1 = Math.Max(y1, elementBounds.Max(bounds => bounds.MaxY));
+                }
                 // Центр пика (ячейка) — зона обязана его покрывать после всех сдвигов
                 var peakXM = mosaic.OriginXM + (ix0 + 0.5) * (cellMm / 1000.0);
                 var peakYM = mosaic.OriginYM + (iy0 + 0.5) * (cellMm / 1000.0);
@@ -139,7 +183,7 @@ namespace LiraSlabZones.Core
                 {
                     longStartM = x0;
                     longEndM = x1;
-                    spanPerpMm = (jUp - jDown + 1) * cellMm;
+                    spanPerpMm = UnitConversion.MetersToMm(y1 - y0);
                     corePerp0 = y0;
                     corePerp1 = y1;
                 }
@@ -147,7 +191,7 @@ namespace LiraSlabZones.Core
                 {
                     longStartM = y0;
                     longEndM = y1;
-                    spanPerpMm = (iRight - iLeft + 1) * cellMm;
+                    spanPerpMm = UnitConversion.MetersToMm(x1 - x0);
                     corePerp0 = x0;
                     corePerp1 = x1;
                 }
@@ -157,7 +201,8 @@ namespace LiraSlabZones.Core
                 var longStartMm = UnitConversion.MetersToMm(longStartM) - ancMm;
                 var longEndMm = UnitConversion.MetersToMm(longEndM) + ancMm;
 
-                var (barCount, widthMm) = BarCapacity.BarsForSpanAndAs(vPeak, dZone, step, spanPerpMm);
+                var (barCount, widthMm) = BarCapacity.BarsForSpanAndAs(
+                    requiredPeakAs, dZone, step, spanPerpMm);
                 if (widthMm + 1e-6 < spanPerpMm)
                 {
                     barCount = Math.Max(2, (int)Math.Ceiling(spanPerpMm / step) + 1);
@@ -180,10 +225,6 @@ namespace LiraSlabZones.Core
                 var asCovered = BarCapacity.AsCm2PerM(dZone, step);
 
                 var segments = SplitByMaxLength(longStartMm, longEndMm, dZone, concrete, settings.AlphaCoef);
-
-                var elementIds = new List<int>();
-                foreach (var cell in activeRegion)
-                    elementIds.AddRange(mosaic.PlateIds[cell.Iy][cell.Ix]);
 
                 var coreCx = (x0 + x1) / 2.0;
                 var coreCy = (y0 + y1) / 2.0;
@@ -369,8 +410,8 @@ namespace LiraSlabZones.Core
                         WidthM = direction == ZoneDirection.X ? (maxYM - minYM) : (maxXM - minXM),
                         LengthM = direction == ZoneDirection.X ? (maxXM - minXM) : (maxYM - minYM),
                         LevelZM = mosaic.LevelZM,
-                        AsRequired = vPeak + GetAsMain(settings, layer),
-                        AsAdditional = vPeak,
+                        AsRequired = requiredPeakAs + GetAsMain(settings, layer),
+                        AsAdditional = requiredPeakAs,
                         Comment = comment,
                         IsValid = true,
                         StatusColor = familyKind == ZoneFamilyKind.Straight ? "ok" : "warn",
@@ -789,6 +830,9 @@ namespace LiraSlabZones.Core
                 ApplyFinalEdgeFamilies(merged, settings, outline);
                 RemoveZonesWithoutActiveCoverage(merged, mosaic);
             }
+            PartitionInvalidOverlaps(merged, mosaic);
+            RemoveZonesWithoutActiveCoverage(merged, mosaic);
+            RefreshZoneDimensions(merged);
             for (var i = 0; i < merged.Count; i++)
                 merged[i].ZoneId = i + 1;
             return merged;
@@ -873,8 +917,17 @@ namespace LiraSlabZones.Core
         }
 
         private static void PartitionInvalidOverlaps(
-            List<AdditionalZone> zones, MosaicGrid mosaic)
+            List<AdditionalZone> zones, MosaicGrid mosaic,
+            IList<Point3>? clipOutline = null, bool includeEndGaps = false)
         {
+            var activeElementIds = new HashSet<int>();
+            for (var iy = 0; iy < mosaic.Ny; iy++)
+            for (var ix = 0; ix < mosaic.Nx; ix++)
+            {
+                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                activeElementIds.UnionWith(mosaic.PlateIds[iy][ix]);
+            }
+
             for (var pass = 0; pass < zones.Count; pass++)
             {
                 var changed = false;
@@ -898,8 +951,10 @@ namespace LiraSlabZones.Core
                     var overlapY = Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY);
                     var requiredGap = UnitConversion.MmToMeters(Math.Min(a.BarStepMm, b.BarStepMm));
                     var localGapConflict = a.Direction == ZoneDirection.X
-                        ? overlapX > 1e-6 && overlapY > -requiredGap + 1e-6
-                        : overlapY > 1e-6 && overlapX > -requiredGap + 1e-6;
+                        ? (overlapX > 1e-6 && overlapY > -requiredGap + 1e-6) ||
+                          (includeEndGaps && overlapY > 1e-6 && overlapX > -requiredGap + 1e-6)
+                        : (overlapY > 1e-6 && overlapX > -requiredGap + 1e-6) ||
+                          (includeEndGaps && overlapX > 1e-6 && overlapY > -requiredGap + 1e-6);
                     if ((!RectanglesOverlapArea(
                              aMinX, aMaxX, aMinY, aMaxY,
                              bMinX, bMaxX, bMinY, bMaxY) && !localGapConflict) ||
@@ -909,14 +964,127 @@ namespace LiraSlabZones.Core
                         continue;
 
                     var shared = new HashSet<int>(a.NodeIds.Intersect(b.NodeIds));
+                    var gap = requiredGap;
+                    var sourceCandidates = new HashSet<int>(a.NodeIds.Concat(b.NodeIds));
+                    sourceCandidates.UnionWith(activeElementIds);
+                    var sourceIds = new HashSet<int>(sourceCandidates
+                        .Where(id => mosaic.PlateCentroids.TryGetValue(id, out var point) &&
+                            ((point.X >= aMinX - 0.01 && point.X <= aMaxX + 0.01 &&
+                              point.Y >= aMinY - 0.01 && point.Y <= aMaxY + 0.01) ||
+                             (point.X >= bMinX - 0.01 && point.X <= bMaxX + 0.01 &&
+                              point.Y >= bMinY - 0.01 && point.Y <= bMaxY + 0.01))));
+                    var longitudinalPartitionGap = includeEndGaps ? gap : 0.0;
                     bool SharedRemainCovered(
                         double aaMinX, double aaMaxX, double aaMinY, double aaMaxY,
-                        double bbMinX, double bbMaxX, double bbMinY, double bbMaxY) =>
-                        shared.All(id => mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
-                            ((centroid.X >= aaMinX - 1e-6 && centroid.X <= aaMaxX + 1e-6 &&
-                              centroid.Y >= aaMinY - 1e-6 && centroid.Y <= aaMaxY + 1e-6) ||
-                             (centroid.X >= bbMinX - 1e-6 && centroid.X <= bbMaxX + 1e-6 &&
-                              centroid.Y >= bbMinY - 1e-6 && centroid.Y <= bbMaxY + 1e-6)));
+                        double bbMinX, double bbMaxX, double bbMinY, double bbMaxY)
+                    {
+                        foreach (var id in sourceIds)
+                        {
+                            var centroid = mosaic.PlateCentroids[id];
+                            const double toleranceM = 0.01;
+                            var inFirst = centroid.X >= aaMinX - toleranceM && centroid.X <= aaMaxX + toleranceM &&
+                                          centroid.Y >= aaMinY - toleranceM && centroid.Y <= aaMaxY + toleranceM;
+                            var inSecond = centroid.X >= bbMinX - toleranceM && centroid.X <= bbMaxX + toleranceM &&
+                                           centroid.Y >= bbMinY - toleranceM && centroid.Y <= bbMaxY + toleranceM;
+                            if (inFirst || inSecond) continue;
+
+                            var bridgeCovered = false;
+                            if (a.Direction == ZoneDirection.X)
+                            {
+                                var commonXMin = Math.Max(aaMinX, bbMinX);
+                                var commonXMax = Math.Min(aaMaxX, bbMaxX);
+                                var lowerYMax = aaMinY <= bbMinY ? aaMaxY : bbMaxY;
+                                var upperYMin = aaMinY <= bbMinY ? bbMinY : aaMinY;
+                                var crossGap = upperYMin - lowerYMax;
+                                bridgeCovered = commonXMax - commonXMin > 1e-6 &&
+                                    crossGap >= -1e-6 && crossGap <= gap + 1e-6 &&
+                                    centroid.X >= commonXMin - toleranceM &&
+                                    centroid.X <= commonXMax + toleranceM &&
+                                    centroid.Y >= lowerYMax - toleranceM &&
+                                    centroid.Y <= upperYMin + toleranceM;
+                                if (!bridgeCovered)
+                                {
+                                    var commonYMin = Math.Max(aaMinY, bbMinY);
+                                    var commonYMax = Math.Min(aaMaxY, bbMaxY);
+                                    var leftXMax = aaMinX <= bbMinX ? aaMaxX : bbMaxX;
+                                    var rightXMin = aaMinX <= bbMinX ? bbMinX : aaMinX;
+                                    var longGap = rightXMin - leftXMax;
+                                    bridgeCovered = commonYMax - commonYMin > 1e-6 &&
+                                        longGap >= -1e-6 && longGap <= gap + 1e-6 &&
+                                        centroid.X >= leftXMax - toleranceM &&
+                                        centroid.X <= rightXMin + toleranceM &&
+                                        centroid.Y >= commonYMin - toleranceM &&
+                                        centroid.Y <= commonYMax + toleranceM;
+                                }
+                            }
+                            else
+                            {
+                                var commonYMin = Math.Max(aaMinY, bbMinY);
+                                var commonYMax = Math.Min(aaMaxY, bbMaxY);
+                                var leftXMax = aaMinX <= bbMinX ? aaMaxX : bbMaxX;
+                                var rightXMin = aaMinX <= bbMinX ? bbMinX : aaMinX;
+                                var crossGap = rightXMin - leftXMax;
+                                bridgeCovered = commonYMax - commonYMin > 1e-6 &&
+                                    crossGap >= -1e-6 && crossGap <= gap + 1e-6 &&
+                                    centroid.Y >= commonYMin - toleranceM &&
+                                    centroid.Y <= commonYMax + toleranceM &&
+                                    centroid.X >= leftXMax - toleranceM &&
+                                    centroid.X <= rightXMin + toleranceM;
+                                if (!bridgeCovered)
+                                {
+                                    var commonXMin = Math.Max(aaMinX, bbMinX);
+                                    var commonXMax = Math.Min(aaMaxX, bbMaxX);
+                                    var lowerYMax = aaMinY <= bbMinY ? aaMaxY : bbMaxY;
+                                    var upperYMin = aaMinY <= bbMinY ? bbMinY : aaMinY;
+                                    var longGap = upperYMin - lowerYMax;
+                                    bridgeCovered = commonXMax - commonXMin > 1e-6 &&
+                                        longGap >= -1e-6 && longGap <= gap + 1e-6 &&
+                                        centroid.Y >= lowerYMax - toleranceM &&
+                                        centroid.Y <= upperYMin + toleranceM &&
+                                        centroid.X >= commonXMin - toleranceM &&
+                                        centroid.X <= commonXMax + toleranceM;
+                                }
+                            }
+                            if (!bridgeCovered) return false;
+                        }
+                        return true;
+                    }
+                    bool TryApplyPartition(
+                        double aaMinX, double aaMaxX, double aaMinY, double aaMaxY,
+                        double bbMinX, double bbMaxX, double bbMinY, double bbMaxY)
+                    {
+                        if (!SharedRemainCovered(
+                                aaMinX, aaMaxX, aaMinY, aaMaxY,
+                                bbMinX, bbMaxX, bbMinY, bbMaxY))
+                            return false;
+                        if (clipOutline == null || clipOutline.Count < 3)
+                        {
+                            SetZoneBounds(a, aaMinX, aaMaxX, aaMinY, aaMaxY);
+                            SetZoneBounds(b, bbMinX, bbMaxX, bbMinY, bbMaxY);
+                            return true;
+                        }
+
+                        var trimmedA = ZoneEditor.TrimToBounds(
+                            a, aaMinX, aaMaxX, aaMinY, aaMaxY, clipOutline);
+                        var trimmedB = ZoneEditor.TrimToBounds(
+                            b, bbMinX, bbMaxX, bbMinY, bbMaxY, clipOutline);
+                        if (trimmedA == null || trimmedB == null) return false;
+                        var actualAMinX = trimmedA.Contour.Min(point => point.X);
+                        var actualAMaxX = trimmedA.Contour.Max(point => point.X);
+                        var actualAMinY = trimmedA.Contour.Min(point => point.Y);
+                        var actualAMaxY = trimmedA.Contour.Max(point => point.Y);
+                        var actualBMinX = trimmedB.Contour.Min(point => point.X);
+                        var actualBMaxX = trimmedB.Contour.Max(point => point.X);
+                        var actualBMinY = trimmedB.Contour.Min(point => point.Y);
+                        var actualBMaxY = trimmedB.Contour.Max(point => point.Y);
+                        if (!SharedRemainCovered(
+                                actualAMinX, actualAMaxX, actualAMinY, actualAMaxY,
+                                actualBMinX, actualBMaxX, actualBMinY, actualBMaxY))
+                            return false;
+                        zones[i] = trimmedA;
+                        zones[j] = trimmedB;
+                        return true;
+                    }
                     var aUnique = a.NodeIds.Where(id => !shared.Contains(id) &&
                         mosaic.PlateCentroids.ContainsKey(id)).ToList();
                     var bUnique = b.NodeIds.Where(id => !shared.Contains(id) &&
@@ -924,14 +1092,140 @@ namespace LiraSlabZones.Core
                     var aPerp = aUnique.Count > 0
                         ? aUnique.Average(id => a.Direction == ZoneDirection.X
                             ? mosaic.PlateCentroids[id].Y : mosaic.PlateCentroids[id].X)
-                        : a.Direction == ZoneDirection.X ? a.Placement.Y : a.Placement.X;
+                        : a.Direction == ZoneDirection.X ? (aMinY + aMaxY) / 2.0 : (aMinX + aMaxX) / 2.0;
                     var bPerp = bUnique.Count > 0
                         ? bUnique.Average(id => b.Direction == ZoneDirection.X
                             ? mosaic.PlateCentroids[id].Y : mosaic.PlateCentroids[id].X)
-                        : b.Direction == ZoneDirection.X ? b.Placement.Y : b.Placement.X;
+                        : b.Direction == ZoneDirection.X ? (bMinY + bMaxY) / 2.0 : (bMinX + bMaxX) / 2.0;
                     if (Math.Abs(aPerp - bPerp) < 1e-6)
-                        continue;
-                    var gap = requiredGap;
+                    {
+                        aPerp = a.Direction == ZoneDirection.X
+                            ? (aMinY + aMaxY) / 2.0 : (aMinX + aMaxX) / 2.0;
+                        bPerp = b.Direction == ZoneDirection.X
+                            ? (bMinY + bMaxY) / 2.0 : (bMinX + bMaxX) / 2.0;
+                    }
+
+                    double Long(int id) => a.Direction == ZoneDirection.X
+                        ? mosaic.PlateCentroids[id].X
+                        : mosaic.PlateCentroids[id].Y;
+                    bool TrySplitLongitudinally()
+                    {
+                        var aLongMin = a.Direction == ZoneDirection.X ? aMinX : aMinY;
+                        var aLongMax = a.Direction == ZoneDirection.X ? aMaxX : aMaxY;
+                        var bLongMin = a.Direction == ZoneDirection.X ? bMinX : bMinY;
+                        var bLongMax = a.Direction == ZoneDirection.X ? bMaxX : bMaxY;
+                        var aLong = aUnique.Count > 0 ? aUnique.Average(Long) : (aLongMin + aLongMax) / 2.0;
+                        var bLong = bUnique.Count > 0 ? bUnique.Average(Long) : (bLongMin + bLongMax) / 2.0;
+                        var aBefore = Math.Abs(aLong - bLong) > 1e-6
+                            ? aLong < bLong
+                            : aLongMin < bLongMin - 1e-6 ||
+                              (Math.Abs(aLongMin - bLongMin) <= 1e-6 && i < j);
+                        var beforeIds = aBefore ? aUnique : bUnique;
+                        var afterIds = aBefore ? bUnique : aUnique;
+                        var beforeCenter = aBefore ? aLong : bLong;
+                        var afterCenter = aBefore ? bLong : aLong;
+                        var beforeMax = beforeIds.Count > 0 ? beforeIds.Max(Long) : beforeCenter;
+                        var afterMin = afterIds.Count > 0 ? afterIds.Min(Long) : afterCenter;
+                        var aBeforeBound = a.Direction == ZoneDirection.X ? aMaxX : aMaxY;
+                        var bBeforeBound = a.Direction == ZoneDirection.X ? bMaxX : bMaxY;
+                        var beforeBound = aBefore ? aBeforeBound : bBeforeBound;
+                        var afterBound = aBefore
+                            ? (a.Direction == ZoneDirection.X ? bMinX : bMinY)
+                            : (a.Direction == ZoneDirection.X ? aMinX : aMinY);
+                        var interfaceCenter = (beforeBound + afterBound) / 2.0;
+                        var candidateSplits = new List<double>
+                        {
+                            interfaceCenter,
+                            (beforeCenter + afterCenter) / 2.0,
+                            (beforeMax + afterMin) / 2.0,
+                            beforeMax + longitudinalPartitionGap / 2.0,
+                            afterMin - longitudinalPartitionGap / 2.0
+                        };
+                        if (longitudinalPartitionGap > 0)
+                        {
+                            foreach (var id in sourceIds)
+                            {
+                                var coordinate = Long(id);
+                                candidateSplits.Add(coordinate - longitudinalPartitionGap / 2.0);
+                                candidateSplits.Add(coordinate + longitudinalPartitionGap / 2.0);
+                            }
+                        }
+
+                        foreach (var split in candidateSplits.Distinct()
+                                     .OrderBy(value => Math.Abs(value - interfaceCenter)))
+                        {
+                            var nextAMinX = aMinX;
+                            var nextAMaxX = aMaxX;
+                            var nextAMinY = aMinY;
+                            var nextAMaxY = aMaxY;
+                            var nextBMinX = bMinX;
+                            var nextBMaxX = bMaxX;
+                            var nextBMinY = bMinY;
+                            var nextBMaxY = bMaxY;
+                            var beforeEnd = split - longitudinalPartitionGap / 2.0;
+                            var afterStart = split + longitudinalPartitionGap / 2.0;
+                            var candidateBeforeEnd = Math.Min(beforeBound, beforeEnd);
+                            var candidateAfterStart = Math.Max(afterBound, afterStart);
+                            if (longitudinalPartitionGap > 0 &&
+                                Math.Abs(candidateAfterStart - candidateBeforeEnd - gap) > 0.01)
+                                continue;
+
+                            if (a.Direction == ZoneDirection.X)
+                            {
+                                if (aBefore)
+                                {
+                                    nextAMaxX = candidateBeforeEnd;
+                                    nextBMinX = candidateAfterStart;
+                                }
+                                else
+                                {
+                                    nextBMaxX = candidateBeforeEnd;
+                                    nextAMinX = candidateAfterStart;
+                                }
+                            }
+                            else if (aBefore)
+                            {
+                                nextAMaxY = candidateBeforeEnd;
+                                nextBMinY = candidateAfterStart;
+                            }
+                            else
+                            {
+                                nextBMaxY = candidateBeforeEnd;
+                                nextAMinY = candidateAfterStart;
+                            }
+
+                            if (nextAMaxX - nextAMinX < 0.05 || nextAMaxY - nextAMinY < 0.05 ||
+                                nextBMaxX - nextBMinX < 0.05 || nextBMaxY - nextBMinY < 0.05 ||
+                                !SharedRemainCovered(
+                                    nextAMinX, nextAMaxX, nextAMinY, nextAMaxY,
+                                    nextBMinX, nextBMaxX, nextBMinY, nextBMaxY))
+                                continue;
+                            if (!TryApplyPartition(
+                                    nextAMinX, nextAMaxX, nextAMinY, nextAMaxY,
+                                    nextBMinX, nextBMaxX, nextBMinY, nextBMaxY))
+                                continue;
+                            return true;
+                        }
+                        return false;
+                    }
+
+                    var longitudinalOverlap = a.Direction == ZoneDirection.X ? overlapX : overlapY;
+                    var transverseOverlap = a.Direction == ZoneDirection.X ? overlapY : overlapX;
+                    if (includeEndGaps && transverseOverlap > 1e-6 &&
+                        longitudinalOverlap < gap - 1e-6)
+                    {
+                        if (!TrySplitLongitudinally()) continue;
+                        changed = true;
+                        break;
+                    }
+
+                    if (Math.Abs(aPerp - bPerp) < 1e-6)
+                    {
+                        if (!includeEndGaps) continue;
+                        if (!TrySplitLongitudinally()) continue;
+                        changed = true;
+                        break;
+                    }
                     var aIsLower = aPerp < bPerp;
                     var lowerIds = aIsLower ? aUnique : bUnique;
                     var upperIds = aIsLower ? bUnique : aUnique;
@@ -942,81 +1236,83 @@ namespace LiraSlabZones.Core
                         : mosaic.PlateCentroids[id].X;
                     var lowerCoreMax = lowerIds.Count > 0 ? lowerIds.Max(Perp) : lowerFallback;
                     var upperCoreMin = upperIds.Count > 0 ? upperIds.Min(Perp) : upperFallback;
-                    if (upperCoreMin - lowerCoreMax < gap - 1e-6)
+                    bool TrySplitTransversely(double preferredSplit)
                     {
-                        double Long(int id) => a.Direction == ZoneDirection.X
-                            ? mosaic.PlateCentroids[id].X
-                            : mosaic.PlateCentroids[id].Y;
-                        var aLong = aUnique.Count > 0 ? aUnique.Average(Long) :
-                            a.Direction == ZoneDirection.X ? a.Placement.X : a.Placement.Y;
-                        var bLong = bUnique.Count > 0 ? bUnique.Average(Long) :
-                            b.Direction == ZoneDirection.X ? b.Placement.X : b.Placement.Y;
-                        if (Math.Abs(aLong - bLong) < 1e-6)
-                            continue;
-                        var aBefore = aLong < bLong;
-                        var beforeIds = aBefore ? aUnique : bUnique;
-                        var afterIds = aBefore ? bUnique : aUnique;
-                        var beforeMax = beforeIds.Count > 0 ? beforeIds.Max(Long) : Math.Min(aLong, bLong);
-                        var afterMin = afterIds.Count > 0 ? afterIds.Min(Long) : Math.Max(aLong, bLong);
-                        var longSplit = afterMin < beforeMax - 1e-6
-                            ? (aLong + bLong) / 2.0
-                            : (beforeMax + afterMin) / 2.0;
-                        if (a.Direction == ZoneDirection.X)
+                        var lowerMin = a.Direction == ZoneDirection.X
+                            ? (aIsLower ? aMinY : bMinY)
+                            : (aIsLower ? aMinX : bMinX);
+                        var lowerMax = a.Direction == ZoneDirection.X
+                            ? (aIsLower ? aMaxY : bMaxY)
+                            : (aIsLower ? aMaxX : bMaxX);
+                        var upperMin = a.Direction == ZoneDirection.X
+                            ? (aIsLower ? bMinY : aMinY)
+                            : (aIsLower ? bMinX : aMinX);
+                        var upperMax = a.Direction == ZoneDirection.X
+                            ? (aIsLower ? bMaxY : aMaxY)
+                            : (aIsLower ? bMaxX : aMaxX);
+                        var interfaceCenter = (lowerMax + upperMin) / 2.0;
+                        var candidates = new List<double>
                         {
-                            if (aBefore) { aMaxX = Math.Min(aMaxX, longSplit); bMinX = Math.Max(bMinX, longSplit); }
-                            else { bMaxX = Math.Min(bMaxX, longSplit); aMinX = Math.Max(aMinX, longSplit); }
-                        }
-                        else
+                            interfaceCenter,
+                            preferredSplit,
+                            (lowerCoreMax + upperCoreMin) / 2.0,
+                            lowerCoreMax + gap / 2.0,
+                            upperCoreMin - gap / 2.0,
+                            lowerMax + gap / 2.0,
+                            upperMin - gap / 2.0
+                        };
+
+                        foreach (var split in candidates.Distinct()
+                                     .OrderBy(value => Math.Abs(value - interfaceCenter)))
                         {
-                            if (aBefore) { aMaxY = Math.Min(aMaxY, longSplit); bMinY = Math.Max(bMinY, longSplit); }
-                            else { bMaxY = Math.Min(bMaxY, longSplit); aMinY = Math.Max(aMinY, longSplit); }
+                            var lowerEnd = Math.Min(lowerMax, split - gap / 2.0);
+                            var upperStart = Math.Max(upperMin, split + gap / 2.0);
+                            if (Math.Abs(upperStart - lowerEnd - gap) > 0.01) continue;
+
+                            var nextAMinX = aMinX;
+                            var nextAMaxX = aMaxX;
+                            var nextAMinY = aMinY;
+                            var nextAMaxY = aMaxY;
+                            var nextBMinX = bMinX;
+                            var nextBMaxX = bMaxX;
+                            var nextBMinY = bMinY;
+                            var nextBMaxY = bMaxY;
+                            if (a.Direction == ZoneDirection.X)
+                            {
+                                if (aIsLower)
+                                {
+                                    nextAMaxY = lowerEnd;
+                                    nextBMinY = upperStart;
+                                }
+                                else
+                                {
+                                    nextBMaxY = lowerEnd;
+                                    nextAMinY = upperStart;
+                                }
+                            }
+                            else if (aIsLower)
+                            {
+                                nextAMaxX = lowerEnd;
+                                nextBMinX = upperStart;
+                            }
+                            else
+                            {
+                                nextBMaxX = lowerEnd;
+                                nextAMinX = upperStart;
+                            }
+
+                            if (nextAMaxX - nextAMinX < 0.05 || nextAMaxY - nextAMinY < 0.05 ||
+                                nextBMaxX - nextBMinX < 0.05 || nextBMaxY - nextBMinY < 0.05 ||
+                                !TryApplyPartition(
+                                    nextAMinX, nextAMaxX, nextAMinY, nextAMaxY,
+                                    nextBMinX, nextBMaxX, nextBMinY, nextBMaxY))
+                                continue;
+                            return true;
                         }
-                        if (aMaxX - aMinX < 0.05 || aMaxY - aMinY < 0.05 ||
-                            bMaxX - bMinX < 0.05 || bMaxY - bMinY < 0.05 ||
-                            !SharedRemainCovered(
-                                aMinX, aMaxX, aMinY, aMaxY,
-                                bMinX, bMaxX, bMinY, bMaxY))
-                            continue;
-                        SetZoneBounds(a, aMinX, aMaxX, aMinY, aMaxY);
-                        SetZoneBounds(b, bMinX, bMaxX, bMinY, bMaxY);
-                        changed = true;
-                        break;
+                        return false;
                     }
                     var split = (lowerCoreMax + upperCoreMin) / 2.0;
-                    if (a.Direction == ZoneDirection.X)
-                    {
-                        if (aIsLower)
-                        {
-                            aMaxY = Math.Min(aMaxY, split - gap / 2.0);
-                            bMinY = Math.Max(bMinY, split + gap / 2.0);
-                        }
-                        else
-                        {
-                            bMaxY = Math.Min(bMaxY, split - gap / 2.0);
-                            aMinY = Math.Max(aMinY, split + gap / 2.0);
-                        }
-                    }
-                    else
-                    {
-                        if (aIsLower)
-                        {
-                            aMaxX = Math.Min(aMaxX, split - gap / 2.0);
-                            bMinX = Math.Max(bMinX, split + gap / 2.0);
-                        }
-                        else
-                        {
-                            bMaxX = Math.Min(bMaxX, split - gap / 2.0);
-                            aMinX = Math.Max(aMinX, split + gap / 2.0);
-                        }
-                    }
-                    if (aMaxX - aMinX < 0.05 || aMaxY - aMinY < 0.05 ||
-                        bMaxX - bMinX < 0.05 || bMaxY - bMinY < 0.05 ||
-                        !SharedRemainCovered(
-                            aMinX, aMaxX, aMinY, aMaxY,
-                            bMinX, bMaxX, bMinY, bMaxY))
-                        continue;
-                    SetZoneBounds(a, aMinX, aMaxX, aMinY, aMaxY);
-                    SetZoneBounds(b, bMinX, bMaxX, bMinY, bMaxY);
+                    if (!TrySplitTransversely(split) && !TrySplitLongitudinally()) continue;
                     changed = true;
                     break;
                 }

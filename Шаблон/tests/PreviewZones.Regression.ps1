@@ -17,6 +17,418 @@ function Assert($condition, [string]$message) {
     if (-not $condition) { throw $message }
 }
 
+function New-GapZone([double]$minY, [double]$maxY, [int]$step, [double]$capacity) {
+    $zone = [LiraSlabZones.Core.AdditionalZone]::new()
+    $zone.Layer = [LiraSlabZones.Core.RebarLayer]::As2
+    $zone.Direction = [LiraSlabZones.Core.ZoneDirection]::X
+    $zone.BarStepMm = $step
+    $zone.AsCoveredCm2PerM = $capacity
+    $zone.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new(0, $minY, 0))
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new(4, $minY, 0))
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new(4, $maxY, 0))
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new(0, $maxY, 0))
+    return $zone
+}
+
+function New-RectZone([double]$minX, [double]$maxX, [double]$minY, [double]$maxY,
+    [int]$step, [double]$capacity) {
+    $zone = [LiraSlabZones.Core.AdditionalZone]::new()
+    $zone.Layer = [LiraSlabZones.Core.RebarLayer]::As2
+    $zone.Direction = [LiraSlabZones.Core.ZoneDirection]::X
+    $zone.BarStepMm = $step
+    $zone.AsCoveredCm2PerM = $capacity
+    $zone.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new($minX, $minY, 0))
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new($maxX, $minY, 0))
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new($maxX, $maxY, 0))
+    $zone.Contour.Add([LiraSlabZones.Core.Point3]::new($minX, $maxY, 0))
+    return $zone
+}
+
+$gapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$gapZones.Add((New-GapZone 0 1 200 5))
+$gapZones.Add((New-GapZone 1.2 2.2 200 3))
+$gapPoint = [LiraSlabZones.Core.Point3]::new(2, 1.1, 0)
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($gapZones, $gapPoint, 3)) `
+    'A 200 mm gap between zones with 200 mm spacing was reported uncovered.'
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($gapZones, $gapPoint, 3.01)) `
+    'Gap capacity must equal the weaker adjacent zone.'
+for ($i = 0; $i -lt $gapZones[1].Contour.Count; $i++) {
+    $point = $gapZones[1].Contour[$i]
+    $gapZones[1].Contour[$i] = [LiraSlabZones.Core.Point3]::new($point.X, $point.Y + 0.001, $point.Z)
+}
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($gapZones, $gapPoint, 0)) `
+    'A gap larger than the smaller zone spacing was reported covered.'
+for ($i = 0; $i -lt $gapZones[1].Contour.Count; $i++) {
+    $point = $gapZones[1].Contour[$i]
+    $gapZones[1].Contour[$i] = [LiraSlabZones.Core.Point3]::new($point.X, $point.Y - 0.101, $point.Z)
+}
+$gapZones[0].BarStepMm = 100
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($gapZones, $gapPoint, 3)) `
+    'A 100 mm gap between 100/200 mm zones was reported uncovered.'
+Write-Host 'PASS gaps up to the smaller zone spacing use the weaker adjacent capacity'
+
+function New-ContourPlate([int]$id, [double]$minX, [double]$maxX, [double]$minY, [double]$maxY) {
+    $plate = [LiraSlabZones.Core.LiraPlateElement]::new()
+    $plate.Id = $id
+    $plate.Centroid = [LiraSlabZones.Core.Point3]::new(($minX + $maxX) / 2, ($minY + $maxY) / 2, 0)
+    $plate.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new($minX, $minY, 0))
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new($maxX, $minY, 0))
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new($maxX, $maxY, 0))
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new($minX, $maxY, 0))
+    return $plate
+}
+
+$strictGapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$strictGapZones.Add((New-GapZone 0 1 200 5))
+$strictGapZones.Add((New-GapZone 1.2 2.2 200 3))
+$bridgePlate = New-ContourPlate 590 1 3 1.02 1.18
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $strictGapZones, $bridgePlate, [LiraSlabZones.Core.RebarLayer]::As2, 3)) `
+    'An FE fully contained in the single allowed gap between two zones was reported uncovered.'
+$edgePlate = New-ContourPlate 591 3.95 4.05 0.2 0.8
+$singleEdgeZone = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$singleEdgeZone.Add((New-GapZone 0 1 200 5))
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $singleEdgeZone, $edgePlate, [LiraSlabZones.Core.RebarLayer]::As2, 3)) `
+    'A partial FE crossing a single zone edge was incorrectly reported fully covered.'
+$outsidePairPlate = New-ContourPlate 592 3.95 4.05 1.02 1.18
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $strictGapZones, $outsidePairPlate, [LiraSlabZones.Core.RebarLayer]::As2, 3)) `
+    'The step-gap exception covered an FE portion beyond the combined extent of its two zones.'
+$overlapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$overlapZones.Add((New-RectZone 0 2 0 2 200 5))
+$overlapZones.Add((New-RectZone 1.9 4 0 2 200 5))
+$overlapPlate = New-ContourPlate 594 1.5 2.5 0.5 1.5
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $overlapZones, $overlapPlate, [LiraSlabZones.Core.RebarLayer]::As2, 3)) `
+    'Overlapping zones were incorrectly treated as the permitted step-gap exception.'
+ $boundaryZone = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+ $boundaryZone.Add((New-GapZone 0 1 200 5))
+ $boundaryPlate = New-ContourPlate 593 1 3 -0.05 0.5
+ $slabOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+ foreach ($point in @(@(0,0),@(4,0),@(4,2),@(0,2))) {
+    $slabOutline.Add([LiraSlabZones.Core.Point3]::new($point[0],$point[1],0))
+ }
+ Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $boundaryZone, $boundaryPlate, [LiraSlabZones.Core.RebarLayer]::As2, 3, $slabOutline)) `
+    'A zone covering the full in-slab part of a boundary FE was reported uncovered.'
+Write-Host 'PASS full FE geometry is required for direct and two-zone gap coverage'
+
+$holePlate = New-ContourPlate 595 1.0 1.4 0.3 0.7
+$holePlate.Rebar.Ok = $true
+$holePlate.Rebar.As2 = 5
+$holeZone = New-RectZone 1.05 1.4 0.3 0.7 200 5
+$holeZoneList = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$holeZoneList.Add($holeZone)
+$hole = [LiraSlabZones.Core.OpeningInfo]::new()
+$hole.MinXM = 0.5
+$hole.MaxXM = 1.0
+$hole.MinYM = 0.3
+$hole.MaxYM = 0.7
+$holes = [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new()
+$holes.Add($hole)
+$holeOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+foreach ($xy in @(@(0,0), @(2,0), @(2,1), @(0,1))) {
+    $holeOutline.Add([LiraSlabZones.Core.Point3]::new($xy[0], $xy[1], 0))
+}
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $holeZoneList, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline)) `
+    'A 50 mm edge allowance was applied without passing detected openings.'
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $holeZoneList, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
+    'A plate edge 50 mm from an opening was reported uncovered.'
+$over50Zone = New-RectZone 1.0502 1.4 0.3 0.7 200 5
+$over50Zones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$over50Zones.Add($over50Zone)
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $over50Zones, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
+    'The opening allowance accepted a zone more than 50 mm away.'
+$shortHoleZone = New-RectZone 1.05 1.35 0.3 0.7 200 5
+$shortHoleZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$shortHoleZones.Add($shortHoleZone)
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $shortHoleZones, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
+    'The opening allowance hid a separate uncovered strip away from the opening.'
+$emptyNearHoleZone = New-RectZone 0.55 0.9 0.3 0.7 200 5
+$emptyNearHoleZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$emptyNearHoleZones.Add($emptyNearHoleZone)
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $emptyNearHoleZones, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
+    'A nearby zone with no actual overlap was allowed to cover an FE.'
+Write-Host 'PASS 50 mm opening allowance covers only the FE portion beside a real opening'
+
+$splitSource = [LiraSlabZones.Core.AdditionalZone]::new()
+$splitSource.Layer = [LiraSlabZones.Core.RebarLayer]::As2
+$splitSource.NodeIds.Add(501)
+$splitPlate = [LiraSlabZones.Core.LiraPlateElement]::new()
+$splitPlate.Id = 501
+$splitPlate.Centroid = [LiraSlabZones.Core.Point3]::new(2, 1.1, 0)
+$splitPlate.Rebar.Ok = $true
+$splitPlate.Rebar.As2 = 3
+$splitPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$splitPlates.Add($splitPlate)
+$splitZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$splitZones.Add((New-GapZone 0 1 200 5))
+$splitZones.Add((New-GapZone 1.2 2.2 200 3))
+$splitPlateMap = [Collections.Generic.Dictionary[int,LiraSlabZones.Core.LiraPlateElement]]::new()
+$splitPlateMap.Add($splitPlate.Id, $splitPlate)
+$findUncoveredSplitElements = [LiraSlabZones.Core.SlabZoneAnalyzer].GetMethod(
+    'FindUncoveredZoneElements', [Reflection.BindingFlags]'NonPublic,Static')
+$splitMissing = $findUncoveredSplitElements.Invoke(
+    $null, [object[]]@($splitSource, $splitZones, $splitPlateMap,
+        [LiraSlabZones.Core.AnalysisSettings]::new(), [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new(),
+        [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new()))
+Assert ($splitMissing.Count -eq 0) 'Opening split rejected an FE covered by the permitted 200 mm gap.'
+for ($i = 0; $i -lt $splitZones[1].Contour.Count; $i++) {
+    $point = $splitZones[1].Contour[$i]
+    $splitZones[1].Contour[$i] = [LiraSlabZones.Core.Point3]::new($point.X, $point.Y + 0.001, $point.Z)
+}
+$splitMissing = $findUncoveredSplitElements.Invoke(
+    $null, [object[]]@($splitSource, $splitZones, $splitPlateMap,
+        [LiraSlabZones.Core.AnalysisSettings]::new(), [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new(),
+        [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new()))
+Assert ($splitMissing.Count -eq 1 -and $splitMissing[0] -eq 501) `
+    'Opening split accepted an FE in a gap larger than the configured spacing.'
+Write-Host 'PASS opening split preserves FE coverage across allowed gaps only'
+
+function New-TestPlate([int]$id, [double]$y, [double]$as2) {
+    $plate = [LiraSlabZones.Core.LiraPlateElement]::new()
+    $plate.Id = $id
+    $plate.Centroid = [LiraSlabZones.Core.Point3]::new(2, $y, 0)
+    $plate.Rebar.Ok = $true
+    $plate.Rebar.As2 = $as2
+    return $plate
+}
+
+$gapRepairSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$gapRepairSettings.AsMainAs2 = 0
+$edgeRepairZone = New-GapZone 0 1 200 5
+$edgeRepairZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$edgeRepairZones.Add($edgeRepairZone)
+$cornerEdgePlate = New-ContourPlate 598 -0.05 0.05 -0.05 0.05
+$cornerEdgePlate.Rebar.Ok = $true
+$cornerEdgePlate.Rebar.As2 = 3
+$oppositeEdgePlate = New-ContourPlate 599 -0.05 0.05 0.2 0.8
+$oppositeEdgePlate.Rebar.Ok = $true
+$oppositeEdgePlate.Rebar.As2 = 3
+$edgeRepairPlate = New-ContourPlate 600 3.95 4.05 0.2 0.8
+$edgeRepairPlate.Rebar.Ok = $true
+$edgeRepairPlate.Rebar.As2 = 3
+$edgeRepairPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$edgeRepairPlates.Add($cornerEdgePlate)
+$edgeRepairPlates.Add($oppositeEdgePlate)
+$edgeRepairPlates.Add($edgeRepairPlate)
+[LiraSlabZones.Core.ZoneEditor]::CloseUncoveredStepGaps(
+    $edgeRepairZones, $edgeRepairPlates, $gapRepairSettings,
+    [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new(),
+    [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new())
+$edgeRepairFailures = @($edgeRepairPlates | Where-Object {
+    -not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $edgeRepairZones, $_, [LiraSlabZones.Core.RebarLayer]::As2, 3)
+})
+Assert ($edgeRepairFailures.Count -eq 0) `
+    'The repair pass did not extend the zone to cover the full footprints of its partially covered edge FEs.'
+Write-Host 'PASS partial edge FE is repaired by extending the zone in whole spacing modules'
+
+$boundarySettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$boundarySettings.AsMainAs2 = 0
+$boundarySettings.ReverseZoneDirections = $true
+$weakBoundaryZone = New-RectZone 0 4 0 1 100 2
+$strongBoundaryZone = New-RectZone 0 4 1.1 2.1 200 5
+$weakBoundaryZone.FamilyKind = [LiraSlabZones.Core.ZoneFamilyKind]::L
+$weakBoundaryZone.VerticalLegMm = 200
+$strongBoundaryZone.FamilyKind = [LiraSlabZones.Core.ZoneFamilyKind]::BentStick
+$strongBoundaryZone.VerticalLegMm = 300
+$boundaryZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$boundaryZones.Add($weakBoundaryZone)
+$boundaryZones.Add($strongBoundaryZone)
+$boundaryTarget = New-ContourPlate 604 1.5 2.5 0.8 1.2
+$boundaryTarget.Rebar.Ok = $true
+$boundaryTarget.Rebar.As2 = 3
+$weakPreservePlate = New-ContourPlate 605 1.5 2.5 0.1 0.3
+$weakPreservePlate.Rebar.Ok = $true
+$weakPreservePlate.Rebar.As2 = 2
+$strongPreservePlate = New-ContourPlate 606 1.5 2.5 1.5 1.7
+$strongPreservePlate.Rebar.Ok = $true
+$strongPreservePlate.Rebar.As2 = 4
+$weakBoundaryZone.NodeIds.Add($weakPreservePlate.Id)
+$strongBoundaryZone.NodeIds.Add($strongPreservePlate.Id)
+$boundaryPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$boundaryPlates.Add($boundaryTarget)
+$boundaryPlates.Add($weakPreservePlate)
+$boundaryPlates.Add($strongPreservePlate)
+[LiraSlabZones.Core.ZoneEditor]::CloseUncoveredStepGaps(
+    $boundaryZones, $boundaryPlates, $boundarySettings,
+    [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new(),
+    [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new())
+$boundaryGap = ($strongBoundaryZone.Contour.Y | Measure-Object -Minimum).Minimum -
+    ($weakBoundaryZone.Contour.Y | Measure-Object -Maximum).Maximum
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $boundaryZones, $boundaryTarget, [LiraSlabZones.Core.RebarLayer]::As2, 3)) `
+    'The stronger neighboring zone did not take full coverage of a FE crossing the capacity boundary.'
+Assert ([Math]::Abs($boundaryGap - 0.1) -le 0.001) `
+    'Moving the shared zone boundary did not preserve the 100 mm separation.'
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $boundaryZones, $weakPreservePlate, [LiraSlabZones.Core.RebarLayer]::As2, 2) -and
+    [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $boundaryZones, $strongPreservePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4)) `
+    'Moving the shared boundary lost coverage of a previously covered FE.'
+Assert ([Math]::Abs($weakBoundaryZone.WidthMm / $weakBoundaryZone.BarStepMm -
+        [Math]::Round($weakBoundaryZone.WidthMm / $weakBoundaryZone.BarStepMm)) -lt 0.001 -and
+    [Math]::Abs($strongBoundaryZone.WidthMm / $strongBoundaryZone.BarStepMm -
+        [Math]::Round($strongBoundaryZone.WidthMm / $strongBoundaryZone.BarStepMm)) -lt 0.001) `
+    'Moving the shared boundary made a zone width non-integral in bar spacing.'
+Assert ($weakBoundaryZone.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::L -and
+    $weakBoundaryZone.VerticalLegMm -eq 200 -and
+    $strongBoundaryZone.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::BentStick -and
+    $strongBoundaryZone.VerticalLegMm -eq 300) `
+    'Moving the shared boundary changed the zones bent families or leg lengths.'
+Write-Host 'PASS adjacent capacity boundary shifts by whole bar modules and keeps both zones covered'
+
+$repairZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$repairZones.Add((New-GapZone 0 1 200 5))
+$repairZones.Add((New-GapZone 1.4 2.4 200 3))
+$repairPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$repairPlates.Add((New-TestPlate 601 0.5 3))
+$repairPlates.Add((New-TestPlate 602 1.2 3))
+$repairPlates.Add((New-TestPlate 603 1.9 3))
+[LiraSlabZones.Core.ZoneEditor]::CloseUncoveredStepGaps(
+    $repairZones, $repairPlates, $gapRepairSettings,
+    [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new(),
+    [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new())
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($repairZones, $repairPlates[1].Centroid, 3)) `
+    'The automatic layout did not close a short uncovered FE gap.'
+$repairedGap = ($repairZones[1].Contour.Y | Measure-Object -Minimum).Minimum -
+    ($repairZones[0].Contour.Y | Measure-Object -Maximum).Maximum
+Assert ([Math]::Abs($repairedGap - 0.2) -le 0.001) 'The repaired zone gap is not equal to the 200 mm spacing.'
+Assert (-not [LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($repairZones[0], $repairZones[1])) `
+    'The repaired zones still violate the minimum spacing.'
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($repairZones, $repairPlates[0].Centroid, 3) -and
+    [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($repairZones, $repairPlates[2].Centroid, 3)) `
+    'Closing the gap lost coverage of an existing FE.'
+Write-Host 'PASS automatic layout closes uncovered gaps without losing existing FE coverage'
+
+$endGapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$endGapLower = New-GapZone 0 1 100 5
+$endGapUpper = New-GapZone 0 1 200 3
+$endGapLower.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$endGapLower.Contour.Add([LiraSlabZones.Core.Point3]::new(0, 0, 0))
+$endGapLower.Contour.Add([LiraSlabZones.Core.Point3]::new(1, 0, 0))
+$endGapLower.Contour.Add([LiraSlabZones.Core.Point3]::new(1, 4, 0))
+$endGapLower.Contour.Add([LiraSlabZones.Core.Point3]::new(0, 4, 0))
+$endGapUpper.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(1.1, 0, 0))
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(2.1, 0, 0))
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(2.1, 4, 0))
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(1.1, 4, 0))
+$endGapZones.Add($endGapLower)
+$endGapZones.Add($endGapUpper)
+Assert (-not [LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($endGapLower, $endGapUpper)) `
+    'A longitudinal butt joint was incorrectly checked as transverse bar-array spacing.'
+$endGapPoint = [LiraSlabZones.Core.Point3]::new(1.05, 2, 0)
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($endGapZones, $endGapPoint, 3)) `
+    'A 100 mm end-to-end gap was not covered at the smaller adjacent capacity.'
+$endGapUpper.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(1.101, 0, 0))
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(2.101, 0, 0))
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(2.101, 4, 0))
+$endGapUpper.Contour.Add([LiraSlabZones.Core.Point3]::new(1.101, 4, 0))
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap($endGapZones, $endGapPoint, 0)) `
+    'An end-to-end gap larger than the smaller spacing was reported covered.'
+Write-Host 'PASS end-to-end gaps use the smaller adjacent bar capacity only within one step'
+
+$spacingLower = New-GapZone 0 1 100 5
+$spacingUpper = New-GapZone 1.1 2.1 200 3
+Assert (-not [LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($spacingLower, $spacingUpper)) `
+    'Zones separated by the smaller adjacent step were reported in conflict.'
+for ($i = 0; $i -lt $spacingUpper.Contour.Count; $i++) {
+    $point = $spacingUpper.Contour[$i]
+    $spacingUpper.Contour[$i] = [LiraSlabZones.Core.Point3]::new($point.X, $point.Y - 0.001, $point.Z)
+}
+Assert ([LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($spacingLower, $spacingUpper)) `
+    'Zones separated by less than the smaller adjacent step were not reported in conflict.'
+Write-Host 'PASS transverse zone separation equals the smaller adjacent spacing'
+
+$partitionMethod = [LiraSlabZones.Core.ZoneLayoutEngine].GetMethod(
+    'PartitionInvalidOverlaps', [Reflection.BindingFlags]'NonPublic,Static')
+$partitionMosaic = [LiraSlabZones.Core.MosaicGrid]::new()
+$partitionMosaic.PlateCentroids.Add(701, [LiraSlabZones.Core.Point3]::new(2, 1, 0))
+$partitionZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$partitionLower = New-GapZone 0 1.4 200 5
+$partitionUpper = New-GapZone 0.6 2 100 3
+$partitionLower.NodeIds.Add(701)
+$partitionUpper.NodeIds.Add(701)
+$partitionZones.Add($partitionLower)
+$partitionZones.Add($partitionUpper)
+[void]$partitionMethod.Invoke($null, [object[]]@($partitionZones, $partitionMosaic, $null, $true))
+$partitionLowerMax = ($partitionLower.Contour.Y | Measure-Object -Maximum).Maximum
+$partitionUpperMin = ($partitionUpper.Contour.Y | Measure-Object -Minimum).Minimum
+Assert (-not [LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($partitionLower, $partitionUpper)) `
+    'Final overlap partition left two transverse zones in conflict.'
+Assert ([Math]::Abs(($partitionUpperMin - $partitionLowerMax) - 0.1) -le 0.001) `
+    'Final overlap partition did not create the smaller adjacent step as a transverse gap.'
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $partitionZones, [LiraSlabZones.Core.Point3]::new(2, 1, 0), 3)) `
+    'Final overlap partition lost the common FE in its permitted weaker-capacity gap.'
+
+$partitionEndZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$partitionEndLeft = New-GapZone 0 4 100 5
+$partitionEndRight = New-GapZone 0 4 200 3
+$partitionEndLeft.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$partitionEndLeft.Contour.Add([LiraSlabZones.Core.Point3]::new(0, 0, 0))
+$partitionEndLeft.Contour.Add([LiraSlabZones.Core.Point3]::new(1, 0, 0))
+$partitionEndLeft.Contour.Add([LiraSlabZones.Core.Point3]::new(1, 4, 0))
+$partitionEndLeft.Contour.Add([LiraSlabZones.Core.Point3]::new(0, 4, 0))
+$partitionEndRight.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$partitionEndRight.Contour.Add([LiraSlabZones.Core.Point3]::new(1, 0, 0))
+$partitionEndRight.Contour.Add([LiraSlabZones.Core.Point3]::new(2, 0, 0))
+$partitionEndRight.Contour.Add([LiraSlabZones.Core.Point3]::new(2, 4, 0))
+$partitionEndRight.Contour.Add([LiraSlabZones.Core.Point3]::new(1, 4, 0))
+$partitionEndLeft.NodeIds.Add(702)
+$partitionEndRight.NodeIds.Add(702)
+$partitionEndZones.Add($partitionEndLeft)
+$partitionEndZones.Add($partitionEndRight)
+$endPartitionMosaic = [LiraSlabZones.Core.MosaicGrid]::new()
+$endPartitionMosaic.PlateCentroids.Add(702, [LiraSlabZones.Core.Point3]::new(1, 2, 0))
+[void]$partitionMethod.Invoke($null, [object[]]@($partitionEndZones, $endPartitionMosaic, $null, $true))
+$partitionEndGap = ($partitionEndRight.Contour.X | Measure-Object -Minimum).Minimum -
+    ($partitionEndLeft.Contour.X | Measure-Object -Maximum).Maximum
+Assert (-not [LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($partitionEndLeft, $partitionEndRight)) `
+    'Final overlap partition left two end-to-end zones in conflict.'
+Assert ([Math]::Abs($partitionEndGap - 0.1) -le 0.001) `
+    'Final overlap partition did not create the smaller adjacent step as an end gap.'
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $partitionEndZones, [LiraSlabZones.Core.Point3]::new(1, 2, 0), 3)) `
+    'Final end-gap partition lost the common FE in its permitted weaker-capacity gap.'
+Write-Host 'PASS final overlap partition applies exact minimum spacing and preserves bridged FE'
+
+$arrayWidthZone = New-GapZone 0 0.95 200 5
+$arrayWidthZone.BarCount = 4
+$arrayWidthZone.WidthMm = 650
+$arrayWidthZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$arrayWidthZones.Add($arrayWidthZone)
+[LiraSlabZones.Core.ZoneEditor]::NormalizeBarArrayWidthsToStep($arrayWidthZones)
+Assert ($arrayWidthZone.BarCount -eq 6 -and $arrayWidthZone.WidthMm -eq 1000) `
+    'The bar array width did not round up to a step multiple that covers the full zone.'
+Write-Host 'PASS family width equals (bar count - 1) x spacing'
+
+$blockedRepairZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$blockedRepairZones.Add((New-GapZone 0 1 200 5))
+$blockedRepairZones.Add((New-GapZone 1.4 2.4 200 3))
+$opening = [LiraSlabZones.Core.OpeningInfo]::new()
+$opening.MinXM = 1; $opening.MaxXM = 3; $opening.MinYM = 1.1; $opening.MaxYM = 1.3
+$blockedOpenings = [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new()
+$blockedOpenings.Add($opening)
+[LiraSlabZones.Core.ZoneEditor]::CloseUncoveredStepGaps(
+    $blockedRepairZones, $repairPlates, $gapRepairSettings,
+    [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new(), $blockedOpenings)
+Assert ([Math]::Abs((($blockedRepairZones[1].Contour.Y | Measure-Object -Minimum).Minimum) - 1.4) -le 1e-6) `
+    'A gap repair moved a zone into an opening.'
+Write-Host 'PASS automatic gap repair does not cross slab openings'
+
 function Assert-ZoneRules($zones, [int]$backgroundDiameter) {
     foreach ($zone in $zones) {
         Assert ($zone.DiameterMm -ge $backgroundDiameter) "Zone $($zone.ZoneId) diameter is below background."
@@ -67,6 +479,23 @@ function Assert-ZoneRules($zones, [int]$backgroundDiameter) {
             }
             Assert (-not $tooClose) "Zones $($zones[$i].ZoneId) and $($zones[$j].ZoneId) violate the $($requiredGap * 1000) mm gap: overlap=($overlapX,$overlapY), gap=($gapX,$gapY), steps=$($zones[$i].BarStepMm)/$($zones[$j].BarStepMm)."
         }
+    }
+}
+
+function Assert-AutoZoneArrayWidths($zones) {
+    foreach ($zone in $zones) {
+        $expectedWidth = ($zone.BarCount - 1) * $zone.BarStepMm
+        Assert ([Math]::Abs($zone.WidthMm - $expectedWidth) -le 0.01) `
+            "Zone $($zone.ZoneId) family width $($zone.WidthMm) is not its $($zone.BarCount) bars at $($zone.BarStepMm) mm spacing."
+        $crossWidthM = if ($zone.Direction -eq [LiraSlabZones.Core.ZoneDirection]::X) {
+            ($zone.Contour.Y | Measure-Object -Maximum).Maximum -
+                ($zone.Contour.Y | Measure-Object -Minimum).Minimum
+        } else {
+            ($zone.Contour.X | Measure-Object -Maximum).Maximum -
+                ($zone.Contour.X | Measure-Object -Minimum).Minimum
+        }
+        Assert ($zone.WidthMm + 1 -ge $crossWidthM * 1000) `
+            "Zone $($zone.ZoneId) bar array is narrower than its contour."
     }
 }
 
@@ -247,6 +676,18 @@ $lapB.LengthMm = 3900;  $lapB.DiameterMm = 16; $lapB.ConcreteClass = 'B40'
 Assert ([LiraSlabZones.Core.RebarTables]::AllowedZoneOverlapMm($lapA, $lapB) -eq 2000) 'Allowed overlap must be two laps of the larger diameter.'
 $lapA.LengthMm = 7800
 Assert ([LiraSlabZones.Core.RebarTables]::AllowedZoneOverlapMm($lapA, $lapB) -eq 0) 'Overlap without a 11700 mm zone must be forbidden.'
+$localOverlapA = New-GapZone 0 2 200 5
+$localOverlapB = New-GapZone 0 2 200 5
+$localOverlapA.FamilyKind = [LiraSlabZones.Core.ZoneFamilyKind]::BentStick
+$localOverlapB.FamilyKind = [LiraSlabZones.Core.ZoneFamilyKind]::BentStick
+$localOverlapA.Comment = 'локальная гнутая деталь'
+$localOverlapB.Comment = 'локальная гнутая деталь'
+for ($i = 0; $i -lt $localOverlapB.Contour.Count; $i++) {
+    $point = $localOverlapB.Contour[$i]
+    $localOverlapB.Contour[$i] = [LiraSlabZones.Core.Point3]::new($point.X + 3.5, $point.Y, $point.Z)
+}
+Assert ([LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($localOverlapA, $localOverlapB)) `
+    'Local bent details bypassed the required non-overlap rule.'
 Write-Host 'PASS 11700 zone overlap uses two laps of the larger diameter'
 
 function Test-ZoneCoverage($plate, $zones) {
@@ -257,11 +698,11 @@ function Test-ZoneCoverage($plate, $zones) {
         $maxY = ($zone.Contour.Y | Measure-Object -Maximum).Maximum
         $dx = [Math]::Max(0, [Math]::Max($minX - $plate.Centroid.X, $plate.Centroid.X - $maxX))
         $dy = [Math]::Max(0, [Math]::Max($minY - $plate.Centroid.Y, $plate.Centroid.Y - $maxY))
-        if ([Math]::Sqrt($dx * $dx + $dy * $dy) -le 0.01) {
-            return $true
-        }
+        if ([Math]::Sqrt($dx * $dx + $dy * $dy) -le 0.01) { return $true }
     }
-    return $false
+    $typedZones = [LiraSlabZones.Core.AdditionalZone[]]@($zones)
+    return [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $typedZones, $plate.Centroid, 0)
 }
 
 function Test-PointCoverage($point, $zones) {
@@ -389,6 +830,7 @@ $approx = [LiraSlabZones.Core.SlabZoneAnalyzer]::BuildResult(
     'APPROX_L_SHAPE', '(synthetic)', 49, $approxPlates, $approxSettings,
     $null, 3.0, 'Z = 3.000 m', $true, $null)
 Assert ($approx.Zones.Count -eq 1) 'L-shaped spot was not approximated by one zone.'
+Assert-AutoZoneArrayWidths $approx.Zones
 $approxZone = $approx.Zones[0]
 Assert ($approxZone.Contour.Count -eq 4) 'Approximated zone is not rectangular.'
 Assert ($approxZone.NodeIds.Count -eq 3) 'Approximated zone lost or added active FE.'
@@ -405,6 +847,7 @@ $reversedApprox = [LiraSlabZones.Core.SlabZoneAnalyzer]::BuildResult(
     'APPROX_L_SHAPE_REVERSED', '(synthetic)', 49, $approxPlates, $approxSettings,
     $null, 3.0, 'Z = 3.000 m', $true, $null)
 Assert ($reversedApprox.Zones.Count -eq 1) 'Reversed L-shaped spot changed the zone count.'
+Assert-AutoZoneArrayWidths $reversedApprox.Zones
 Assert ($reversedApprox.Zones[0].Direction -eq $yDirection) 'Reversed As3 zone was not laid along Y.'
 foreach ($id in $activeIds) {
     $plate = $approxPlates | Where-Object { $_.Id -eq $id }
@@ -451,6 +894,90 @@ $testOutline.Add([LiraSlabZones.Core.Point3]::new(4, 0, 3))
 $testOutline.Add([LiraSlabZones.Core.Point3]::new(4, 4, 3))
 $testOutline.Add([LiraSlabZones.Core.Point3]::new(0, 4, 3))
 $activeAs3 = $approxSettings.AsMainAs3 + 4.0
+
+$peakSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$peakSettings.ShowAs1 = $false
+$peakSettings.ShowAs2 = $true
+$peakSettings.ShowAs3 = $false
+$peakSettings.ShowAs4 = $false
+$peakSettings.SlabSelected = $true
+$peakSettings.BgBottomDiameterMm = 12
+$peakSettings.BgBottomStepMm = 200
+$peakSettings.BgTopDiameterMm = 12
+$peakSettings.BgTopStepMm = 200
+$peakSettings.ConcreteClass = 'B40'
+$peakSettings.GridCellMm = 400
+$peakSettings.DetailSlider = 0.25
+$peakSettings.UseBarStep100 = $true
+$peakSettings.SyncBackgroundAsFromBars()
+$peakPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$peakId = 710
+for ($iy = 0; $iy -lt 3; $iy++) {
+    for ($ix = 0; $ix -lt 3; $ix++) {
+        $value = $peakSettings.AsMainAs2 + $(if ($ix -eq 1 -and $iy -eq 1) { 25.0 } else { 2.0 })
+        $x0 = 1.0 + 0.4 * $ix
+        $y0 = 1.0 + 0.4 * $iy
+        $x1 = $x0 + 0.4
+        $y1 = $y0 + 0.4
+        $points = [double[][]]::new(4)
+        $points[0] = [double[]]@($x0, $y0)
+        $points[1] = [double[]]@($x1, $y0)
+        $points[2] = [double[]]@($x1, $y1)
+        $points[3] = [double[]]@($x0, $y1)
+        $plate = New-PolygonPlate $peakId $points 0
+        $plate.Rebar.As2 = $value
+        $peakPlates.Add($plate)
+        if ($ix -eq 1 -and $iy -eq 1) { $peakId = $plate.Id }
+        $peakId++
+    }
+}
+$peakZones = [LiraSlabZones.Core.ZoneLayoutEngine]::Layout(
+    $peakPlates, $peakSettings, $null, $testOutline, $null)
+$peakCoveringZones = @($peakZones | Where-Object { $_.NodeIds -contains 714 })
+Assert ($peakCoveringZones.Count -gt 0) 'The smoothed 3x3 test lost its central high-demand FE.'
+Assert (($peakCoveringZones | Where-Object { $_.AsCoveredCm2PerM + 1e-6 -ge 25 }).Count -gt 0) `
+    'Smoothing a local peak selected a diameter/step with insufficient reinforcement capacity.'
+Write-Host 'PASS zone bar capacity is selected from the original unsmoothed peak'
+
+$assignedPeakPlate = New-PolygonPlate 780 @(@(1,1), @(1.4,1), @(1.4,1.4), @(1,1.4)) 0
+$assignedPeakPlate.Rebar.Ok = $true
+$assignedPeakPlate.Rebar.As2 = $peakSettings.AsMainAs2 + 20.5
+$assignedPeakPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$assignedPeakPlates.Add($assignedPeakPlate)
+$assignedPeakZone = New-RectZone 0.8 1.6 0.8 1.6 200 5.65
+$assignedPeakZone.Layer = [LiraSlabZones.Core.RebarLayer]::As2
+$assignedPeakZone.DiameterMm = 12
+$assignedPeakZone.NodeIds.Add($assignedPeakPlate.Id)
+$assignedPeakZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$assignedPeakZones.Add($assignedPeakZone)
+Assert ([LiraSlabZones.Core.ZoneEditor]::EnsureAssignedCapacity(
+        $assignedPeakZones, $assignedPeakPlates, $peakSettings) -eq 1) `
+    'Post-layout capacity audit did not update a zone assigned to a high-demand FE.'
+Assert ($assignedPeakZone.DiameterMm -eq 25 -and $assignedPeakZone.BarStepMm -eq 200) `
+    'Post-layout audit did not preserve spacing while increasing the zone diameter.'
+Assert ($assignedPeakZone.AsCoveredCm2PerM + 1e-6 -ge 20.5) `
+    'Post-layout audit left an assigned peak with insufficient zone capacity.'
+
+$stepFallbackSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$stepFallbackSettings.ShowAs2 = $true
+$stepFallbackSettings.BgBottomDiameterMm = 12
+$stepFallbackSettings.BgBottomStepMm = 200
+$stepFallbackSettings.MaxDiameterMm = 22
+$stepFallbackSettings.UseBarStep100 = $true
+$stepFallbackSettings.SyncBackgroundAsFromBars()
+$stepFallbackZone = New-RectZone 0.8 1.6 0.8 1.6 200 5.65
+$stepFallbackZone.Layer = [LiraSlabZones.Core.RebarLayer]::As2
+$stepFallbackZone.DiameterMm = 12
+$stepFallbackZone.NodeIds.Add($assignedPeakPlate.Id)
+$stepFallbackZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$stepFallbackZones.Add($stepFallbackZone)
+[void][LiraSlabZones.Core.ZoneEditor]::EnsureAssignedCapacity(
+    $stepFallbackZones, $assignedPeakPlates, $stepFallbackSettings)
+Assert ($stepFallbackZone.DiameterMm -eq 20 -and $stepFallbackZone.BarStepMm -eq 100) `
+    "Post-layout audit did not fall back to 100 mm spacing when the 200 mm option was insufficient (got Ø$($stepFallbackZone.DiameterMm)/$($stepFallbackZone.BarStepMm))."
+Assert ($stepFallbackZone.AsCoveredCm2PerM + 1e-6 -ge 20.5) `
+    'The 100 mm fallback still does not cover the assigned peak.'
+Write-Host 'PASS post-layout capacity audit upgrades diameter and, only if necessary, bar spacing'
 
 # Два треугольных КЭ составляют один квадрат и должны дать одну зону.
 $trianglePair = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()

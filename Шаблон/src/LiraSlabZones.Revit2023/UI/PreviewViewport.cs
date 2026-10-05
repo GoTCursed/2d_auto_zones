@@ -1425,6 +1425,20 @@ namespace LiraSlabZones.Revit2023.UI
             }
             if (!useSavedZones)
             {
+                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);
+                var neighborLayout = ZonePatchNeighborLayout.Apply(
+                    _patchCandidateZones, patchSourceBounds, patchOuterBounds,
+                    _result.Plates, _settings, _result.Outline, _result.Openings);
+                if (!string.IsNullOrWhiteSpace(neighborLayout.Warning))
+                {
+                    foreach (var zone in _patchCandidateZones)
+                    {
+                        zone.StatusColor = "warn";
+                        zone.Comment = string.IsNullOrWhiteSpace(zone.Comment)
+                            ? neighborLayout.Warning
+                            : zone.Comment + "; " + neighborLayout.Warning;
+                    }
+                }
                 ZonePatchZoneBuilder.MergeShiftableAdjacentZonesAlongBars(
                     _patchCandidateZones, patchSourceBounds, _settings);
                 ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);

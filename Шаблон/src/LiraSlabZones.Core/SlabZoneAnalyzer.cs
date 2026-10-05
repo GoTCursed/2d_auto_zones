@@ -138,6 +138,32 @@ namespace LiraSlabZones.Core
             if (openings != null)
                 detectedOpenings.AddRange(openings.Where(op => !detectedOpenings.Any(existing =>
                     Math.Abs(existing.MinXM - op.MinXM) < 0.001 && Math.Abs(existing.MinYM - op.MinYM) < 0.001)));
+
+            if (!string.Equals(settings.PlacementMode, "LegacyZones", StringComparison.OrdinalIgnoreCase))
+            {
+                var patches = ZonePatchAnalyzer.Build(levelPlates, settings, elev);
+                return new AnalysisResult
+                {
+                    DocumentName = documentName,
+                    DocumentPath = documentPath,
+                    UnitsNote = "Координаты: м. Мозаика As−фон: см²/м. Сейчас строятся только связные пятна и их ограничивающие рамки.",
+                    Settings = settings,
+                    NodeCount = nodeCount,
+                    PlateCount = levelPlates.Count,
+                    Plates = levelPlates,
+                    Outline = outline,
+                    Zones = new List<AdditionalZone>(),
+                    Patches = patches,
+                    PatchPreviewOnly = true,
+                    Axes = axes ?? new List<ConstructionAxis>(),
+                    Openings = detectedOpenings,
+                    ElevationZM = elev,
+                    ElevationLabel = elevationLabel ?? $"Z = {elev:F3} м",
+                    Stats = ComputeStats(new List<AdditionalZone>(), settings, outline, levelPlates),
+                    Diagnostics = new ZoneDiagnostics()
+                };
+            }
+
             // The layout uses openings for avoidance. Actual polygon splitting is applied
             // only below, after the layout has stabilized.
             var zones = ZoneLayoutEngine.Layout(levelPlates, settings,
@@ -271,7 +297,7 @@ namespace LiraSlabZones.Core
                     return !sameLayerZones.Any(candidate => candidate.NodeIds.Contains(id));
 
                 var requiredAs = plate.Rebar.Get(sourceZone.Layer) - BackgroundAs(settings, sourceZone.Layer);
-                if (requiredAs <= 0.01) return false;
+                if (requiredAs <= MosaicBuilder.PositiveResidualToleranceCm2PerM) return false;
 
                 return !ZoneCoverageRules.CoversOrBridgesGap(
                     sameLayerZones, plate, sourceZone.Layer, requiredAs, slabOutline, openings);
@@ -305,16 +331,28 @@ namespace LiraSlabZones.Core
             var rebuilt = BuildResult(source.DocumentName, source.DocumentPath, source.NodeCount,
                 source.Plates, localSettings, source.Axes, source.ElevationZM, source.ElevationLabel,
                 skipLevelFilter: true, openings: source.Openings);
-            rebuilt.Zones = source.Zones.Where(zone => !changed.Contains(zone.Layer))
-                .Concat(rebuilt.Zones).ToList();
-            for (var i = 0; i < rebuilt.Zones.Count; i++) rebuilt.Zones[i].ZoneId = i + 1;
+            if (source.PatchPreviewOnly)
+            {
+                rebuilt.Patches = source.Patches.Where(patch => !changed.Contains(patch.Layer))
+                    .Concat(rebuilt.Patches).ToList();
+                rebuilt.PatchPreviewOnly = true;
+                rebuilt.Zones.Clear();
+                rebuilt.Stats = ComputeStats(rebuilt.Zones, settings, rebuilt.Outline, rebuilt.Plates);
+                rebuilt.Diagnostics = new ZoneDiagnostics();
+            }
+            else
+            {
+                rebuilt.Zones = source.Zones.Where(zone => !changed.Contains(zone.Layer))
+                    .Concat(rebuilt.Zones).ToList();
+                for (var i = 0; i < rebuilt.Zones.Count; i++) rebuilt.Zones[i].ZoneId = i + 1;
+                rebuilt.Stats = ComputeStats(rebuilt.Zones, settings, rebuilt.Outline, rebuilt.Plates);
+                rebuilt.Diagnostics = ZoneLayoutDiagnostics.Evaluate(
+                    rebuilt.Plates, rebuilt.Zones, settings, 0, true, rebuilt.Outline, rebuilt.Openings);
+            }
             rebuilt.Settings = settings;
             rebuilt.AllPlates = source.AllPlates;
             rebuilt.AvailableLevels = source.AvailableLevels;
             rebuilt.UnitsNote = source.UnitsNote;
-            rebuilt.Stats = ComputeStats(rebuilt.Zones, settings, rebuilt.Outline, rebuilt.Plates);
-            rebuilt.Diagnostics = ZoneLayoutDiagnostics.Evaluate(
-                rebuilt.Plates, rebuilt.Zones, settings, 0, true, rebuilt.Outline, rebuilt.Openings);
             return rebuilt;
         }
 
@@ -341,7 +379,7 @@ namespace LiraSlabZones.Core
                     if (!show) continue;
                     double asReq = plate.Rebar.Get(layer);
                     double asAdd = asReq - asMain;
-                    if (asAdd <= 0.01) continue;
+                    if (asAdd <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
                     if (settings.MinZoneWidthM > 0 &&
                         plate.WidthM < settings.MinZoneWidthM && plate.LengthM < settings.MinZoneWidthM)
                         continue;

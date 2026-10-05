@@ -202,6 +202,8 @@ namespace LiraSlabZones.Core
 
         public List<Point3> Outline { get; set; } = new List<Point3>();
         public List<AdditionalZone> Zones { get; set; } = new List<AdditionalZone>();
+        public List<ZonePatch> Patches { get; set; } = new List<ZonePatch>();
+        public bool PatchPreviewOnly { get; set; }
         public List<ConstructionAxis> Axes { get; set; } = new List<ConstructionAxis>();
         public List<ElevationLevelInfo> AvailableLevels { get; set; } = new List<ElevationLevelInfo>();
 
@@ -220,6 +222,48 @@ namespace LiraSlabZones.Core
 
         public PreviewStats Stats { get; set; } = new PreviewStats();
         public ZoneDiagnostics Diagnostics { get; set; } = new ZoneDiagnostics();
+    }
+
+    public sealed class ZonePatch
+    {
+        public int PatchId { get; set; }
+        public RebarLayer Layer { get; set; }
+        public ZoneDirection Direction { get; set; }
+        public double PeakAsAdditionalCm2PerM { get; set; }
+        public int MinCellX { get; set; }
+        public int MaxCellX { get; set; }
+        public int MinCellY { get; set; }
+        public int MaxCellY { get; set; }
+        public double MinXM { get; set; }
+        public double MaxXM { get; set; }
+        public double MinYM { get; set; }
+        public double MaxYM { get; set; }
+        public List<int> ElementIds { get; set; } = new List<int>();
+        public List<ZonePatchCell> Cells { get; set; } = new List<ZonePatchCell>();
+    }
+
+    public sealed class ZonePatchFrameSelection
+    {
+        public List<ZonePatch> Patches { get; set; } = new List<ZonePatch>();
+        public List<AdditionalZone> Zones { get; set; } = new List<AdditionalZone>();
+        public List<ZonePatchFrameElement> Elements { get; set; } = new List<ZonePatchFrameElement>();
+        public List<Point3> SlabOutline { get; set; } = new List<Point3>();
+        public double MinXM { get; set; }
+        public double MaxXM { get; set; }
+        public double MinYM { get; set; }
+        public double MaxYM { get; set; }
+    }
+
+    public sealed class ZonePatchCell
+    {
+        public int Ix { get; set; }
+        public int Iy { get; set; }
+        public double AsAdditionalCm2PerM { get; set; }
+        public double? RawAsAdditionalCm2PerM { get; set; }
+        public double MinXM { get; set; }
+        public double MaxXM { get; set; }
+        public double MinYM { get; set; }
+        public double MaxYM { get; set; }
     }
 
     public sealed class PreviewStats
@@ -267,7 +311,7 @@ namespace LiraSlabZones.Core
         /// <summary>Плита/уровень подтверждены («Взять плиту…» или демо).</summary>
         public bool SlabSelected { get; set; }
 
-        /// <summary>ElementCenter = старый per-FE; AutoLayout = движок раскладки.</summary>
+        /// <summary>Текущий режим — пятна; LegacyZones включает архивное размещение явно.</summary>
         public string PlacementMode { get; set; } = "AutoLayout";
         public int DesignOption { get; set; } = 1;
 
@@ -374,6 +418,7 @@ namespace LiraSlabZones.Core
         public bool UseBarStep100 { get; set; }
         /// <summary>Swap layer directions: As1/As3 use Y, As2/As4 use X.</summary>
         public bool ReverseZoneDirections { get; set; }
+        public bool AveragePatchPeaks { get; set; }
 
         /// <summary>Пересчитать AsMainAs1…4 из Ø/шага фона (низ → As1/As2, верх → As3/As4).</summary>
         public void SyncBackgroundAsFromBars()
@@ -412,7 +457,7 @@ namespace LiraSlabZones.Core
             }
             if (string.IsNullOrWhiteSpace(ConcreteClass))
             {
-                reason = "Задайте класс бетона (влияет на анкеровку и длину зоны SUM-3).";
+                reason = "Задайте класс бетона (влияет на анкеровку и нахлёст).";
                 return false;
             }
             reason = "";

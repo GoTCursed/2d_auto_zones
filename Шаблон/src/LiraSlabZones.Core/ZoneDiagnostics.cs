@@ -88,7 +88,8 @@ namespace LiraSlabZones.Core
                 if (!LayerEnabled(layer, settings)) continue;
                 var background = Background(layer, settings);
                 var layerZones = byLayer.TryGetValue(layer, out var found) ? found : new List<AdditionalZone>();
-                foreach (var plate in plates.Where(p => p.Rebar.Ok && p.Rebar.Get(layer) - background > 0.01))
+                foreach (var plate in plates.Where(p => p.Rebar.Ok &&
+                    p.Rebar.Get(layer) - background > MosaicBuilder.PositiveResidualToleranceCm2PerM))
                 {
                     var requiredAdditional = plate.Rebar.Get(layer) - background;
                     if (ZoneCoverageRules.CoversOrBridgesGap(
@@ -107,10 +108,12 @@ namespace LiraSlabZones.Core
                 if (RebarTables.ExceedsMaxBarLength(zone))
                     result.Issues.Add(Issue(ZoneIssueKind.OverlongBar, zone, "Полная длина больше 11700 мм"));
                 var useful = zone.NodeIds.Any(id => plateById.TryGetValue(id, out var plate) &&
-                    plate.Rebar.Ok && plate.Rebar.Get(zone.Layer) - Background(zone.Layer, settings) > 0.01);
+                    plate.Rebar.Ok && plate.Rebar.Get(zone.Layer) - Background(zone.Layer, settings) >
+                    MosaicBuilder.PositiveResidualToleranceCm2PerM);
                 if (!useful && zone.NodeIds.Count == 0)
                     useful = plates.Any(plate => plate.Rebar.Ok &&
-                        plate.Rebar.Get(zone.Layer) - Background(zone.Layer, settings) > 0.01 &&
+                        plate.Rebar.Get(zone.Layer) - Background(zone.Layer, settings) >
+                        MosaicBuilder.PositiveResidualToleranceCm2PerM &&
                         ZoneCoverageRules.CoversOrBridgesGap(
                             new[] { zone }, plate, zone.Layer,
                             plate.Rebar.Get(zone.Layer) - Background(zone.Layer, settings),
@@ -338,6 +341,23 @@ namespace LiraSlabZones.Core
                     return true;
             }
 
+            if (nearby.Count > 1)
+            {
+                var zonePaths = new Paths64();
+                var openingBuffers = new Paths64();
+                foreach (var zone in nearby)
+                {
+                    zonePaths.Add(ToPath(zone.Contour));
+                    if (openings != null && openings.Count > 0)
+                        openingBuffers.AddRange(ClonePaths(GetZoneOpeningBuffers(zone, openings)));
+                }
+
+                var combinedCoverage = Clipper.Union(zonePaths, FillRule.NonZero);
+                if (ContainsFootprint(footprint.Paths, combinedCoverage) ||
+                    ContainsFootprintNearOpening(footprint, combinedCoverage, openingBuffers))
+                    return true;
+            }
+
             for (var i = 0; i < nearby.Count; i++)
             for (var j = i + 1; j < nearby.Count; j++)
             {
@@ -354,6 +374,15 @@ namespace LiraSlabZones.Core
                     Math.Max(a.MaxY, b.MaxY) < footprint.Bounds.MinY - 1e-6 ||
                     Math.Min(a.MinY, b.MinY) > footprint.Bounds.MaxY + 1e-6)
                     continue;
+
+                if (ZonesTouchOrOverlap(first, second))
+                {
+                    var pairCoverage = Clipper.Union(
+                        new Paths64 { ToPath(first.Contour), ToPath(second.Contour) }, FillRule.NonZero);
+                    if (ContainsFootprint(footprint.Paths, pairCoverage) ||
+                        ContainsFootprintNearOpening(footprint, pairCoverage,
+                            MergeZoneOpeningBuffers(first, second, openings))) return true;
+                }
 
                 foreach (var bridge in GapBridges(first, second))
                 {
@@ -512,6 +541,16 @@ namespace LiraSlabZones.Core
 
         private static bool ContainsFootprint(Paths64 footprint, Paths64 coverage) =>
             footprint.Count > 0 && footprint.All(path => ContainsPolygon(path, coverage));
+
+        private static bool ZonesTouchOrOverlap(AdditionalZone first, AdditionalZone second)
+        {
+            var a = Bounds(first);
+            var b = Bounds(second);
+            var overlapX = Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX);
+            var overlapY = Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+            return overlapX >= -1e-6 && overlapY >= -1e-6 &&
+                   (overlapX > 1e-6 || overlapY > 1e-6);
+        }
 
         private static bool ContainsFootprintNearOpening(
             CachedFootprint footprint, Paths64 coverage, Paths64 qualifyingBuffers)

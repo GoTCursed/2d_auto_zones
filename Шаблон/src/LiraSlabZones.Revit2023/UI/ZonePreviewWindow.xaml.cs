@@ -73,13 +73,40 @@ namespace LiraSlabZones.Revit2023.UI
                         tie +
                         z.Comment;
                 };
+                Viewport.PatchSelected += selection =>
+                {
+                    if (selection == null || selection.Patches.Count == 0)
+                    {
+                        TxtZoneInfo.Text = "Кликните пунктирную рамку на холсте";
+                        return;
+                    }
+
+                    var patches = selection.Patches;
+                    var layers = string.Join(", ", patches.Select(patch => patch.Layer).Distinct());
+                    var elementCount = patches.SelectMany(patch => patch.ElementIds).Distinct().Count();
+                    var patchIds = string.Join(", ", patches.Take(8).Select(patch => $"#{patch.PatchId}"));
+                    if (patches.Count > 8) patchIds += $" … +{patches.Count - 8}";
+                    var zoneLines = selection.Zones.Count == 0
+                        ? "Зоны не сформированы: выберите класс бетона и эталонные Ø/шаг."
+                        : string.Join("\n", selection.Zones.Select(zone =>
+                            $"{zone.Layer}: {zone.DiameterMm}-{zone.LengthMm:0} ×{zone.BarCount}, шаг {zone.BarStepMm}" +
+                            $"\nAs треб.: {zone.AsRequired:0.##}; As доп.: {zone.AsAdditional:0.##}" +
+                            (zone.StatusColor == "warn" ? $"\nПредупреждение: {zone.Comment}" : "")));
+
+                    TxtZoneInfo.Text =
+                        $"{(patches.Count == 1 ? $"Пятно {patchIds}" : $"Объединённая рамка: пятен {patches.Count} ({patchIds})")}\n" +
+                        $"Слои: {layers}\nКЭ (уник.): {elementCount}\n" +
+                        $"Ячейки мозаики: {patches.Sum(patch => patch.Cells.Count)}\n" +
+                        $"Габарит рамки: {(selection.MaxXM - selection.MinXM) * 1000:0} × {(selection.MaxYM - selection.MinYM) * 1000:0} мм\n" +
+                        "Зоны в рамке:\n" + zoneLines;
+                };
                 Viewport.StatusChanged += s => TxtStatus.Text = s;
                 Viewport.ZonesEdited += () =>
                 {
                     if (_result == null) return;
-                    TxtTitle.Text = $"{_result.DocumentName} · Z = {_result.ElevationZM:F3} м · зон: {_result.Zones.Count}";
+                    TxtTitle.Text = $"{_result.DocumentName} · Z = {_result.ElevationZM:F3} м · зон: {Viewport.EditableZoneCount}";
                     RefreshStats();
-                    Log($"Зоны отредактированы: {_result.Zones.Count}", "ok");
+                    Log($"Зоны отредактированы: {Viewport.EditableZoneCount}", "ok");
                 };
             };
         }
@@ -157,7 +184,7 @@ namespace LiraSlabZones.Revit2023.UI
                 !double.TryParse(TbSelectedWidthMm.Text.Replace(',', '.'), NumberStyles.Float,
                     CultureInfo.InvariantCulture, out var width) ||
                 !Viewport.ResizeSelectedZone(length, width))
-                TxtStatus.Text = "Выберите зону и задайте L и B больше 50 мм внутри плиты";
+                TxtStatus.Text = "Выберите зону и задайте L и B больше 50 мм";
         }
 
         private void SelectedZoneFamilyKindChanged(object sender, SelectionChangedEventArgs e)
@@ -191,7 +218,35 @@ namespace LiraSlabZones.Revit2023.UI
         public void SetPlaceCallback(Action<AnalysisResult> callback)
         {
             _placeCallback = callback;
-            BtnPlace.IsEnabled = callback != null;
+            UpdatePreviewModeControls(_result);
+        }
+
+        private void UpdatePreviewModeControls(AnalysisResult? result)
+        {
+            var patchMode = result?.PatchPreviewOnly == true;
+            var editable = result != null && (patchMode
+                ? Viewport.EditableZoneCount > 0 || result.Patches.Count > 0
+                : result.Zones.Count > 0);
+            BtnPlace.IsEnabled = _placeCallback != null && editable && !patchMode;
+            BtnSaveJson.Content = result?.PatchPreviewOnly == true
+                ? "Сохранить JSON пятен…"
+                : "Сохранить JSON зон…";
+            GrpSelectedZone.IsEnabled = editable || patchMode;
+            GrpSelectedZone.Header = patchMode ? "Выбранная зона / пятно" : "Выбранная зона";
+            PanelZoneEditing.Visibility = Visibility.Visible;
+            PanelZoneEditing.IsEnabled = editable;
+            TxtZoneInfo.Text = patchMode ? "Выберите зону или пунктирную рамку" : "Кликните зону на холсте";
+            BtnEditMove.IsEnabled = editable;
+            BtnEditResize.IsEnabled = editable;
+            BtnEditCreate.IsEnabled = editable;
+            BtnEditSplit.IsEnabled = editable;
+            BtnEditPerpendicular.IsEnabled = editable;
+            BtnEditMerge.IsEnabled = editable;
+            BtnEditGap.IsEnabled = editable;
+            BtnEditDelete.IsEnabled = editable;
+            CmbDiagnostics.IsEnabled = result?.PatchPreviewOnly != true;
+            ChkShowIso.Visibility = result?.PatchPreviewOnly == true ? Visibility.Collapsed : Visibility.Visible;
+            ChkShowPatches.Visibility = patchMode ? Visibility.Visible : Visibility.Collapsed;
         }
 
         /// <summary>Имя прямой зоны из ComboBox (из проекта или вручную).</summary>
@@ -270,13 +325,18 @@ namespace LiraSlabZones.Revit2023.UI
             finally { _suppressUiEvents = false; }
 
             var elev = string.IsNullOrWhiteSpace(result.ElevationLabel) ? "" : $"\n{result.ElevationLabel}";
-            TxtSource.Text = $"{result.DocumentName}\nпластин: {result.PlateCount}, зон: {result.Zones.Count}{elev}";
+            var resultKind = result.PatchPreviewOnly
+                ? $"пластин: {result.PlateCount}, пятен: {result.Patches.Count}"
+                : $"пластин: {result.PlateCount}, зон: {result.Zones.Count}";
+            TxtSource.Text = $"{result.DocumentName}\n{resultKind}{elev}";
             TxtTitle.Text = string.IsNullOrWhiteSpace(result.ElevationLabel)
                 ? result.DocumentName
                 : $"{result.DocumentName}  ·  {result.ElevationLabel}";
-            RefreshStats();
             PushToViewport(fitView);
-            Log($"Загружено: {result.DocumentName}, зон {result.Zones.Count}, оси {result.Axes.Count}, контур {result.Outline.Count} т.", "ok");
+            RefreshStats();
+            UpdatePreviewModeControls(result);
+            UpdateLayoutGate(result.Settings);
+            Log($"Загружено: {result.DocumentName}, {(result.PatchPreviewOnly ? $"пятен {result.Patches.Count}" : $"зон {result.Zones.Count}")}, оси {result.Axes.Count}, контур {result.Outline.Count} т.", "ok");
         }
 
         private void FillLevelsCombo(AnalysisResult result)
@@ -311,7 +371,8 @@ namespace LiraSlabZones.Revit2023.UI
                 ChkShowMesh.IsChecked == true,
                 ChkShowIso.IsChecked == true,
                 ChkShowAxes.IsChecked == true,
-                fitView: fitView);
+                fitView: fitView,
+                showPatches: ChkShowPatches.IsChecked == true);
             TxtZoom.Text = $"{Viewport.Zoom * 100:0}%";
         }
 
@@ -452,17 +513,22 @@ namespace LiraSlabZones.Revit2023.UI
             rebuilt.Settings = settings;
             _result = rebuilt;
             _plates = rebuilt.Plates ?? _plates;
+            UpdatePreviewModeControls(rebuilt);
             RefreshStats();
             UpdateBackgroundAsLabels(settings);
             UpdateLayoutGate(settings);
-            var gate = settings.CanLayoutAdditionalZones(out var why)
+            var gate = rebuilt.PatchPreviewOnly || settings.CanLayoutAdditionalZones(out var why)
                 ? ""
                 : $" | допки: {why}";
-            TxtSource.Text = $"{rebuilt.DocumentName}\nпластин: {rebuilt.PlateCount}, зон: {rebuilt.Zones.Count}" +
+            var resultKind = rebuilt.PatchPreviewOnly
+                ? $"пластин: {rebuilt.PlateCount}, пятен: {rebuilt.Patches.Count}"
+                : $"пластин: {rebuilt.PlateCount}, зон: {rebuilt.Zones.Count}";
+            TxtSource.Text = $"{rebuilt.DocumentName}\n{resultKind}" +
                              (string.IsNullOrWhiteSpace(rebuilt.ElevationLabel) ? "" : $"\n{rebuilt.ElevationLabel}");
             PushToViewport(fitView: false);
-            Log($"Пересчёт: зон {rebuilt.Zones.Count}{gate} (вид сохранён)",
-                settings.CanLayoutAdditionalZones(out _) ? "ok" : "warn");
+            var summary = rebuilt.PatchPreviewOnly ? $"пятен {rebuilt.Patches.Count}" : $"зон {rebuilt.Zones.Count}{gate}";
+            Log($"Пересчёт: {summary} (вид сохранён)",
+                rebuilt.PatchPreviewOnly || settings.CanLayoutAdditionalZones(out _) ? "ok" : "warn");
         }
 
         private void ScheduleAutoRebuild()
@@ -624,7 +690,11 @@ namespace LiraSlabZones.Revit2023.UI
         private void BtnSaveJson_Click(object sender, RoutedEventArgs e)
         {
             if (_result == null) return;
-            var dlg = new SaveFileDialog { Filter = "JSON (*.json)|*.json", FileName = "slab_zones.json" };
+            var dlg = new SaveFileDialog
+            {
+                Filter = "JSON (*.json)|*.json",
+                FileName = _result.PatchPreviewOnly ? "slab_patches.json" : "slab_zones.json"
+            };
             if (dlg.ShowDialog() != true) return;
             _result.Settings = ReadSettingsFromUi();
             SlabZoneAnalyzer.SaveJson(_result, dlg.FileName);
@@ -673,7 +743,7 @@ namespace LiraSlabZones.Revit2023.UI
 
         private void BtnPlace_Click(object sender, RoutedEventArgs e)
         {
-            if (_result == null || _placeCallback == null) return;
+            if (_result == null || _placeCallback == null || _result.PatchPreviewOnly || _result.Zones.Count == 0) return;
             _result.Settings = ReadSettingsFromUi();
             _placeCallback(_result);
         }
@@ -745,7 +815,8 @@ namespace LiraSlabZones.Revit2023.UI
             Viewport.RefreshDisplayFlags(
                 ChkShowMesh.IsChecked == true,
                 ChkShowIso.IsChecked == true,
-                ChkShowAxes.IsChecked == true);
+                ChkShowAxes.IsChecked == true,
+                ChkShowPatches.IsChecked == true);
         }
 
         private AnalysisSettings ReadSettingsFromUi()
@@ -758,7 +829,7 @@ namespace LiraSlabZones.Revit2023.UI
             var concrete = ComboIntOrText(CmbConcrete);
             if (concrete == "—" || concrete == "-") concrete = "";
 
-            var auto = ChkAutoLayout.IsChecked == true;
+            const bool auto = true;
             var detailSlider = DetailOptimizer.SliderFromStepIndex(
                 DetailOptimizer.StepIndexFromSlider(SldDetail.Value));
             var detail = DetailOptimizer.FromSlider(detailSlider);
@@ -802,13 +873,14 @@ namespace LiraSlabZones.Revit2023.UI
                 FamilyPDiff = string.IsNullOrWhiteSpace(TbFamilyPDiff.Text) ? baseCfg.FamilyPDiff : TbFamilyPDiff.Text.Trim(),
                 FamilyBentStick = string.IsNullOrWhiteSpace(TbFamilyBent.Text) ? baseCfg.FamilyBentStick : TbFamilyBent.Text.Trim(),
                 AutoLayout = auto,
-                PlacementMode = auto ? "AutoLayout" : "ElementCenter",
+                PlacementMode = "AutoLayout",
                 DetailLevel = detail,
                 DetailSlider = detailSlider,
                 BarStepMm = barStep,
                 ExcludedZoneDiametersMm = _excludedZoneDiameters.OrderBy(d => d).ToList(),
                 UseBarStep100 = ChkBarStep100.IsChecked == true,
                 ReverseZoneDirections = ChkReverseDirections.IsChecked == true,
+                AveragePatchPeaks = ChkAveragePeaks.IsChecked == true,
                 ConcreteClass = concrete,
                 GridCellMm = I(TbGridCell.Text, 300),
                 SlabThicknessMm = D(TbThick.Text, 200),
@@ -855,7 +927,7 @@ namespace LiraSlabZones.Revit2023.UI
             TbOffY.Text = s.OffsetYM.ToString("0.###", CultureInfo.InvariantCulture);
             TbRot.Text = s.RotationDeg.ToString("0.##", CultureInfo.InvariantCulture);
 
-            ChkAutoLayout.IsChecked = s.AutoLayout;
+            ChkAutoLayout.IsChecked = true;
             SldDetail.Value = DetailOptimizer.SliderFromStepIndex(
                 DetailOptimizer.StepIndexFromSlider(Math.Max(0, Math.Min(1, s.DetailSlider))));
             TxtDetail.Text = DetailOptimizer.LabelWithMass(SldDetail.Value, 0);
@@ -866,6 +938,7 @@ namespace LiraSlabZones.Revit2023.UI
 
             ChkBarStep100.IsChecked = s.UseBarStep100 || s.BarStepMm == 100;
             ChkReverseDirections.IsChecked = s.ReverseZoneDirections;
+            ChkAveragePeaks.IsChecked = s.AveragePatchPeaks;
             SelectCombo(CmbConcrete, string.IsNullOrWhiteSpace(s.ConcreteClass) ? "—" : s.ConcreteClass);
             SelectFamilyInCombo(s.FamilyStraight);
             if (CmbZoneFamily.SelectedIndex < 0)
@@ -923,6 +996,32 @@ namespace LiraSlabZones.Revit2023.UI
         {
             if (TxtLayoutGate == null) return;
             s ??= (_result?.Settings != null ? ReadSettingsFromUi() : new AnalysisSettings());
+            if (_result?.PatchPreviewOnly == true)
+            {
+                var missingBottom = (s.ShowAs1 || s.ShowAs2) &&
+                                    (s.BgBottomDiameterMm <= 0 || s.BgBottomStepMm <= 0);
+                var missingTop = (s.ShowAs3 || s.ShowAs4) &&
+                                 (s.BgTopDiameterMm <= 0 || s.BgTopStepMm <= 0);
+                if (string.IsNullOrWhiteSpace(s.ConcreteClass))
+                {
+                    TxtLayoutGate.Text = "Выберите класс бетона для расчёта анкеровки и нахлёстов.";
+                    TxtLayoutGate.Foreground = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0xB4, 0x53, 0x09));
+                }
+                else if (missingBottom || missingTop)
+                {
+                    TxtLayoutGate.Text = "Задайте эталонные стержни (Ø и шаг) для включённых слоёв.";
+                    TxtLayoutGate.Foreground = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0xB4, 0x53, 0x09));
+                }
+                else
+                {
+                    TxtLayoutGate.Text = $"Прямые стержни · анкеровка и нахлёст по {s.ConcreteClass} · максимум 11700 мм.";
+                    TxtLayoutGate.Foreground = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(0x15, 0x80, 0x3D));
+                }
+                return;
+            }
             if (s.CanLayoutAdditionalZones(out var reason))
             {
                 TxtLayoutGate.Text = "Условия выполнены — можно раскладывать допки.";
@@ -977,6 +1076,32 @@ namespace LiraSlabZones.Revit2023.UI
             var elev = string.IsNullOrWhiteSpace(_result.ElevationLabel)
                 ? $"Z = {_result.ElevationZM:F3} м"
                 : _result.ElevationLabel;
+            if (_result.PatchPreviewOnly)
+            {
+                var patches = _result.Patches ?? new List<ZonePatch>();
+                var uniqueElements = patches.SelectMany(patch => patch.ElementIds).Distinct().Count();
+                var cellCount = patches.Sum(patch => patch.Cells.Count);
+                TxtStats.Text =
+                    $"Отметка: {elev}\n" +
+                    $"Режим: связные пятна / {DetailOptimizer.StepLabel(DetailOptimizer.StepIndexFromSlider(_result.Settings.DetailSlider))}\n" +
+                    $"КЭ уровня: {_result.PlateCount}\n" +
+                    $"Мозаика: {_result.Settings.GridCellMm} × {_result.Settings.GridCellMm} мм\n" +
+                    "Подписи КЭ: требуемая добавка As, см²/м\n" +
+                    $"Пятна: {patches.Count}\n" +
+                    $"Зоны: {Viewport.EditableZoneCount}\n" +
+                    $"Ячейки в пятнах: {cellCount}\n" +
+                    $"КЭ в пятнах (уник.): {uniqueElements}\n" +
+                    $"As1: {patches.Count(patch => patch.Layer == RebarLayer.As1)}\n" +
+                    $"As2: {patches.Count(patch => patch.Layer == RebarLayer.As2)}\n" +
+                    $"As3: {patches.Count(patch => patch.Layer == RebarLayer.As3)}\n" +
+                    $"As4: {patches.Count(patch => patch.Layer == RebarLayer.As4)}\n" +
+                    $"Контур: {_result.Outline.Count} вершин\n" +
+                    $"Отверстия: {_result.Openings.Count}";
+                TxtDetail.Text = DetailOptimizer.StepLabel(
+                    DetailOptimizer.StepIndexFromSlider(_result.Settings.DetailSlider));
+                return;
+            }
+
             var mode = _result.Settings.AutoLayout ? "Автораскладка" : "По КЭ";
             var overlong = _result.Zones.Count(RebarTables.ExceedsMaxBarLength);
             var diagnostics = _result.Diagnostics ?? new ZoneDiagnostics();

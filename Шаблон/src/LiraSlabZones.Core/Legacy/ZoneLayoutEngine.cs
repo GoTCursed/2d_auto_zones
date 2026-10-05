@@ -5,7 +5,9 @@ using System.Linq;
 namespace LiraSlabZones.Core
 {
     /// <summary>
-    /// Автораскладка зон доп. армирования по мозаике As−фон (см²/м).
+    /// Архивный движок размещения зон. Текущий BuildResult в режиме автораскладки
+    /// использует ZonePatchAnalyzer и этот класс не вызывает.
+    /// Прежнее поведение: мозаика As−фон (см²/м), подбор и ремонт физических зон.
     /// Длина = пятно + 2×анкеровка → SUM-3 вверх; ширина кратна шагу и покрывает пятно;
     /// соседние зоны с зазором = шаг стержней перпендикулярно длине.
     /// </summary>
@@ -118,7 +120,7 @@ namespace LiraSlabZones.Core
             var peaks = new List<(double V, int Ix, int Iy)>();
             for (var iy = 0; iy < ny; iy++)
             for (var ix = 0; ix < nx; ix++)
-                if (values[iy][ix] > 0.01)
+                if (values[iy][ix] > MosaicBuilder.PositiveResidualToleranceCm2PerM)
                     peaks.Add((values[iy][ix], ix, iy));
             // Все положительные ячейки являются кандидатами. После обработки высоких
             // диапазонов оставшиеся низкие значения также должны получить покрытие.
@@ -136,10 +138,10 @@ namespace LiraSlabZones.Core
                 // В режиме Min весь положительный связный диапазон образует одно пятно.
                 // На остальных ступенях сохраняется градация относительно локального пика.
                 var aThr = detailStep == DetailOptimizer.StepCount - 1
-                    ? 0.01
+                    ? MosaicBuilder.PositiveResidualToleranceCm2PerM
                     : thresholdRatio * vPeak;
                 var activeRegion = GrowConnectedRegion(
-                    values, assigned, ix0, iy0, aThr,
+                    values, assigned, ix0, iy0, aThr, direction,
                     out var iLeft, out var iRight, out var jDown, out var jUp);
                 // Smoothing may lower an isolated peak for region grouping, but must not
                 // lower the bar capacity selected for the finite elements in that region.
@@ -165,15 +167,6 @@ namespace LiraSlabZones.Core
                 var x1 = mosaic.OriginXM + (iRight + 1) * (cellMm / 1000.0);
                 var y0 = mosaic.OriginYM + jDown * (cellMm / 1000.0);
                 var y1 = mosaic.OriginYM + (jUp + 1) * (cellMm / 1000.0);
-                var elementBounds = elementIds.Where(mosaic.PlateBounds.ContainsKey)
-                    .Select(id => mosaic.PlateBounds[id]).ToList();
-                if (elementBounds.Count > 0)
-                {
-                    x0 = Math.Min(x0, elementBounds.Min(bounds => bounds.MinX));
-                    x1 = Math.Max(x1, elementBounds.Max(bounds => bounds.MaxX));
-                    y0 = Math.Min(y0, elementBounds.Min(bounds => bounds.MinY));
-                    y1 = Math.Max(y1, elementBounds.Max(bounds => bounds.MaxY));
-                }
                 // Центр пика (ячейка) — зона обязана его покрывать после всех сдвигов
                 var peakXM = mosaic.OriginXM + (ix0 + 0.5) * (cellMm / 1000.0);
                 var peakYM = mosaic.OriginYM + (iy0 + 0.5) * (cellMm / 1000.0);
@@ -610,7 +603,7 @@ namespace LiraSlabZones.Core
         /// Так ступенчатые и Г-образные диапазоны не распадаются на зоны по одной ячейке.
         /// </summary>
         private static List<(int Ix, int Iy)> GrowConnectedRegion(
-            double[][] area, bool[,] assigned, int ix0, int iy0, double aThr,
+            double[][] area, bool[,] assigned, int ix0, int iy0, double aThr, ZoneDirection direction,
             out int iLeft, out int iRight, out int jDown, out int jUp)
         {
             var ny = area.Length;
@@ -633,21 +626,35 @@ namespace LiraSlabZones.Core
                 jDown = Math.Min(jDown, cell.Iy);
                 jUp = Math.Max(jUp, cell.Iy);
 
-                var neighbours = new[]
+                foreach (var next in OrderedNeighbors(cell.Ix, cell.Iy, direction))
                 {
-                    (cell.Ix - 1, cell.Iy), (cell.Ix + 1, cell.Iy),
-                    (cell.Ix, cell.Iy - 1), (cell.Ix, cell.Iy + 1)
-                };
-                foreach (var next in neighbours)
-                {
-                    if (next.Item1 < 0 || next.Item1 >= nx || next.Item2 < 0 || next.Item2 >= ny) continue;
-                    if (visited[next.Item2, next.Item1]) continue;
-                    visited[next.Item2, next.Item1] = true;
-                    if (!assigned[next.Item2, next.Item1] && area[next.Item2][next.Item1] >= aThr)
-                        queue.Enqueue((next.Item1, next.Item2));
+                    if (next.Ix < 0 || next.Ix >= nx || next.Iy < 0 || next.Iy >= ny) continue;
+                    if (visited[next.Iy, next.Ix]) continue;
+                    visited[next.Iy, next.Ix] = true;
+                    if (!assigned[next.Iy, next.Ix] && area[next.Iy][next.Ix] >= aThr)
+                        queue.Enqueue(next);
                 }
             }
             return result;
+        }
+
+        private static IEnumerable<(int Ix, int Iy)> OrderedNeighbors(
+            int ix, int iy, ZoneDirection direction)
+        {
+            if (direction == ZoneDirection.X)
+            {
+                yield return (ix - 1, iy);
+                yield return (ix + 1, iy);
+                yield return (ix, iy + 1);
+                yield return (ix, iy - 1);
+            }
+            else
+            {
+                yield return (ix, iy + 1);
+                yield return (ix, iy - 1);
+                yield return (ix - 1, iy);
+                yield return (ix + 1, iy);
+            }
         }
 
         private static int GetBackgroundDiameter(AnalysisSettings settings, RebarLayer layer) =>
@@ -924,7 +931,7 @@ namespace LiraSlabZones.Core
             for (var iy = 0; iy < mosaic.Ny; iy++)
             for (var ix = 0; ix < mosaic.Nx; ix++)
             {
-                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                if (mosaic.Values[iy][ix] <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
                 activeElementIds.UnionWith(mosaic.PlateIds[iy][ix]);
             }
 
@@ -1573,7 +1580,7 @@ namespace LiraSlabZones.Core
             for (var iy = 0; iy < mosaic.Ny; iy++)
             for (var ix = 0; ix < mosaic.Nx; ix++)
             {
-                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                if (mosaic.Values[iy][ix] <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
                 foreach (var id in mosaic.PlateIds[iy][ix]) activeIds.Add(id);
             }
             var uncoveredIds = new HashSet<int>(activeIds.Where(id =>
@@ -1591,7 +1598,7 @@ namespace LiraSlabZones.Core
                     centroid.Y >= b.MinY - 1e-6 && centroid.Y <= b.MaxY + 1e-6);
             }
             bool NeedsRecovery(int ix, int iy) =>
-                mosaic.Values[iy][ix] > 0.01 &&
+                mosaic.Values[iy][ix] > MosaicBuilder.PositiveResidualToleranceCm2PerM &&
                 mosaic.PlateIds[iy][ix].Any(IsCurrentlyUncovered);
 
             var visited = new bool[mosaic.Ny, mosaic.Nx];
@@ -1608,17 +1615,14 @@ namespace LiraSlabZones.Core
                 {
                     var cell = queue.Dequeue();
                     component.Add(cell);
-                    var neighbours = direction == ZoneDirection.X
-                        ? new[] { (cell.Ix - 1, cell.Iy), (cell.Ix + 1, cell.Iy) }
-                        : new[] { (cell.Ix, cell.Iy - 1), (cell.Ix, cell.Iy + 1) };
-                    foreach (var next in neighbours)
+                    foreach (var next in OrderedNeighbors(cell.Ix, cell.Iy, direction))
                     {
-                        if (next.Item1 < 0 || next.Item1 >= mosaic.Nx ||
-                            next.Item2 < 0 || next.Item2 >= mosaic.Ny ||
-                            visited[next.Item2, next.Item1] || !NeedsRecovery(next.Item1, next.Item2))
+                        if (next.Ix < 0 || next.Ix >= mosaic.Nx ||
+                            next.Iy < 0 || next.Iy >= mosaic.Ny ||
+                            visited[next.Iy, next.Ix] || !NeedsRecovery(next.Ix, next.Iy))
                             continue;
-                        visited[next.Item2, next.Item1] = true;
-                        queue.Enqueue((next.Item1, next.Item2));
+                        visited[next.Iy, next.Ix] = true;
+                        queue.Enqueue(next);
                     }
                 }
 
@@ -1645,38 +1649,14 @@ namespace LiraSlabZones.Core
                 var maxX = mosaic.OriginXM + (component.Max(c => c.Ix) + 1) * cellM;
                 var minY = mosaic.OriginYM + component.Min(c => c.Iy) * cellM;
                 var maxY = mosaic.OriginYM + (component.Max(c => c.Iy) + 1) * cellM;
-                var centroids = elementIds
-                    .Where(mosaic.PlateCentroids.ContainsKey)
-                    .Select(id => mosaic.PlateCentroids[id])
-                    .ToList();
-                if (centroids.Count > 0)
-                {
-                    minX = Math.Min(minX, centroids.Min(p => p.X));
-                    maxX = Math.Max(maxX, centroids.Max(p => p.X));
-                    minY = Math.Min(minY, centroids.Min(p => p.Y));
-                    maxY = Math.Max(maxY, centroids.Max(p => p.Y));
-                }
+                var coreMinX = minX;
+                var coreMaxX = maxX;
+                var coreMinY = minY;
+                var coreMaxY = maxY;
                 var elementBounds = elementIds
                     .Where(mosaic.PlateBounds.ContainsKey)
                     .Select(id => mosaic.PlateBounds[id])
                     .ToList();
-                if (elementBounds.Count > 0)
-                {
-                    if (retainOnlyCoveredIds)
-                    {
-                        minX = elementBounds.Min(b => b.MinX);
-                        maxX = elementBounds.Max(b => b.MaxX);
-                        minY = elementBounds.Min(b => b.MinY);
-                        maxY = elementBounds.Max(b => b.MaxY);
-                    }
-                    else
-                    {
-                        minX = Math.Min(minX, elementBounds.Min(b => b.MinX));
-                        maxX = Math.Max(maxX, elementBounds.Max(b => b.MaxX));
-                        minY = Math.Min(minY, elementBounds.Min(b => b.MinY));
-                        maxY = Math.Max(maxY, elementBounds.Max(b => b.MaxY));
-                    }
-                }
                 var concrete = RebarTables.NormalizeConcrete(settings.ConcreteClass);
                 var anchorageM = UnitConversion.MmToMeters(
                     RebarTables.AnchorageLenMm(concrete, option.DiameterMm));
@@ -1919,14 +1899,6 @@ namespace LiraSlabZones.Core
 
                     // Recovery rectangles are added after the normal gap pass.  Resolve their
                     // conflicts here, keeping the side that contains the FE being recovered.
-                    var coreMinX = centroids.Count > 0 ? centroids.Min(p => p.X) :
-                        elementBounds.Count > 0 ? elementBounds.Min(b => b.MinX) : zoneMinX;
-                    var coreMaxX = centroids.Count > 0 ? centroids.Max(p => p.X) :
-                        elementBounds.Count > 0 ? elementBounds.Max(b => b.MaxX) : zoneMaxX;
-                    var coreMinY = centroids.Count > 0 ? centroids.Min(p => p.Y) :
-                        elementBounds.Count > 0 ? elementBounds.Min(b => b.MinY) : zoneMinY;
-                    var coreMaxY = centroids.Count > 0 ? centroids.Max(p => p.Y) :
-                        elementBounds.Count > 0 ? elementBounds.Max(b => b.MaxY) : zoneMaxY;
                     foreach (var existingBounds in zoneBounds.Where(b =>
                         !retainOnlyCoveredIds && b.Zone.Layer == layer && b.Zone.Direction == direction))
                     {
@@ -2119,7 +2091,7 @@ namespace LiraSlabZones.Core
             for (var iy = 0; iy < mosaic.Ny; iy++)
             for (var ix = 0; ix < mosaic.Nx; ix++)
             {
-                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                if (mosaic.Values[iy][ix] <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
                 foreach (var id in mosaic.PlateIds[iy][ix]) activeIds.Add(id);
             }
             return activeIds.Count(id => mosaic.PlateCentroids.TryGetValue(id, out var centroid) &&
@@ -2136,7 +2108,7 @@ namespace LiraSlabZones.Core
             for (var iy = 0; iy < mosaic.Ny; iy++)
             for (var ix = 0; ix < mosaic.Nx; ix++)
             {
-                if (mosaic.Values[iy][ix] <= 0.01) continue;
+                if (mosaic.Values[iy][ix] <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
                 foreach (var id in mosaic.PlateIds[iy][ix]) activeIds.Add(id);
             }
             zones.RemoveAll(zone => zone.Contour.Count < 3 || !activeIds.Any(id =>
@@ -2484,7 +2456,7 @@ namespace LiraSlabZones.Core
                 for (var iy = 0; iy < mosaic.Ny; iy++)
                 for (var ix = 0; ix < mosaic.Nx; ix++)
                 {
-                    if (mosaic.Values[iy][ix] <= 0.01)
+                    if (mosaic.Values[iy][ix] <= MosaicBuilder.PositiveResidualToleranceCm2PerM)
                         continue;
                     var cx = mosaic.OriginXM + (ix + 0.5) * cellM;
                     var cy = mosaic.OriginYM + (iy + 0.5) * cellM;

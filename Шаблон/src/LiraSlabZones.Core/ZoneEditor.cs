@@ -9,19 +9,20 @@ namespace LiraSlabZones.Core
     {
         private const double Scale = 1000000.0;
 
-        public static bool Move(AdditionalZone zone, double dxM, double dyM, IList<Point3> slab)
+        public static bool Move(AdditionalZone zone, double dxM, double dyM, IList<Point3> slab,
+            bool clipToSlab = true)
         {
             var moved = zone.Contour
                 .Select(p => new Point3(p.X + dxM, p.Y + dyM, p.Z))
                 .ToList();
-            return ApplyClipped(zone, moved, slab);
+            return ApplyEditedContour(zone, moved, slab, clipToSlab);
         }
 
         public static bool Resize(
             AdditionalZone zone, double minX, double maxX, double minY, double maxY,
-            IList<Point3> slab)
+            IList<Point3> slab, bool clipToSlab = true)
         {
-            return ApplyClipped(zone, Rectangle(minX, maxX, minY, maxY, zone.LevelZM), slab);
+            return ApplyEditedContour(zone, Rectangle(minX, maxX, minY, maxY, zone.LevelZM), slab, clipToSlab);
         }
 
         public static AdditionalZone? TrimToBounds(
@@ -77,7 +78,7 @@ namespace LiraSlabZones.Core
                     .Select(plate => plate.Rebar.Get(zone.Layer) - BackgroundAs(settings, zone.Layer))
                     .DefaultIfEmpty(0)
                     .Max();
-                if (requiredAs <= 0.01) continue;
+                if (requiredAs <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
 
                 var currentCapacity = zone.DiameterMm > 0 && zone.BarStepMm > 0
                     ? BarCapacity.AsCm2PerM(zone.DiameterMm, zone.BarStepMm)
@@ -131,20 +132,22 @@ namespace LiraSlabZones.Core
             string.IsNullOrWhiteSpace(comment) ? addition : comment + "; " + addition;
 
         public static List<AdditionalZone> SplitPerpendicularToEdge(
-            AdditionalZone zone, double xM, double yM, bool verticalEdge, IList<Point3> slab)
+            AdditionalZone zone, double xM, double yM, bool verticalEdge, IList<Point3> slab,
+            bool clipToSlab = true)
         {
             // A vertical edge determines a horizontal cut, and vice versa.
-            return Split(zone, verticalEdge ? yM : xM, !verticalEdge, slab);
+            return Split(zone, verticalEdge ? yM : xM, !verticalEdge, slab, clipToSlab);
         }
 
-        public static bool ResizeByDimensions(AdditionalZone zone, double lengthMm, double widthMm, IList<Point3> slab)
+        public static bool ResizeByDimensions(AdditionalZone zone, double lengthMm, double widthMm,
+            IList<Point3> slab, bool clipToSlab = true)
         {
             if (lengthMm <= 50 || widthMm <= 50) return false;
             var halfX = (zone.Direction == ZoneDirection.X ? lengthMm : widthMm) / 2000.0;
             var halfY = (zone.Direction == ZoneDirection.Y ? lengthMm : widthMm) / 2000.0;
             var candidate = Copy(zone);
             if (!Resize(candidate, zone.Placement.X - halfX, zone.Placement.X + halfX,
-                    zone.Placement.Y - halfY, zone.Placement.Y + halfY, slab)) return false;
+                    zone.Placement.Y - halfY, zone.Placement.Y + halfY, slab, clipToSlab)) return false;
             SetContour(zone, candidate.Contour.ToList());
             zone.Comment = "габариты изменены в предпросмотре";
             return true;
@@ -160,7 +163,8 @@ namespace LiraSlabZones.Core
             zone.Comment = "семейство изменено в предпросмотре";
         }
 
-        public static bool CreateGap(AdditionalZone moving, AdditionalZone reference, IList<Point3> slab)
+        public static bool CreateGap(AdditionalZone moving, AdditionalZone reference, IList<Point3> slab,
+            bool clipToSlab = true)
         {
             if (ReferenceEquals(moving, reference)) return false;
             var gap = Math.Min(moving.BarStepMm, reference.BarStepMm) / 1000.0;
@@ -181,7 +185,7 @@ namespace LiraSlabZones.Core
                 var shifted = moving.Contour
                     .Select(p => new Point3(p.X + candidate.Dx, p.Y + candidate.Dy, p.Z))
                     .ToList();
-                if (!ApplyClipped(copy, shifted, slab)) continue;
+                if (!ApplyEditedContour(copy, shifted, slab, clipToSlab)) continue;
                 if (!HasRequiredGap(copy.Contour, reference.Contour, gap)) continue;
                 SetContour(moving, copy.Contour.ToList());
                 moving.Comment = $"зазор {gap * 1000:0} мм создан в предпросмотре";
@@ -267,7 +271,8 @@ namespace LiraSlabZones.Core
             {
                 if (!LayerEnabled(layer, settings)) continue;
                 var requiredAs = plate.Rebar.Get(layer) - BackgroundAs(settings, layer);
-                if (requiredAs <= 0.01 || HasCoverage(zones, layer, plate, requiredAs, slab, openings))
+                if (requiredAs <= MosaicBuilder.PositiveResidualToleranceCm2PerM ||
+                    HasCoverage(zones, layer, plate, requiredAs, slab, openings))
                     continue;
 
                 var candidates = new List<(AdditionalZone Moving, double Dx, double Dy, int ExpandEdge)>();
@@ -499,7 +504,8 @@ namespace LiraSlabZones.Core
 
             copy.NodeIds = copy.NodeIds.Where(id => platesById.TryGetValue(id, out var existingPlate) &&
                     IntersectsBounds(copy, existingPlate)).Concat(plates.Where(plate => plate.Rebar.Ok &&
-                    plate.Rebar.Get(layer) - BackgroundAs(settings, layer) > 0.01 && IntersectsBounds(copy, plate))
+                    plate.Rebar.Get(layer) - BackgroundAs(settings, layer) >
+                    MosaicBuilder.PositiveResidualToleranceCm2PerM && IntersectsBounds(copy, plate))
                 .Select(plate => plate.Id)).Distinct().ToList();
             copy.ElementId = copy.NodeIds.FirstOrDefault();
             copy.Comment = "сдвинуто для покрытия КЭ в зазоре шага";
@@ -650,7 +656,8 @@ namespace LiraSlabZones.Core
                     : (MinX: changedCrossMin, MaxX: changedCrossMax,
                        MinY: changedLongMin, MaxY: changedLongMax);
                 var relevantPlates = plates.Where(candidate => candidate.Rebar.Ok &&
-                    candidate.Rebar.Get(layer) - BackgroundAs(settings, layer) > 0.01 &&
+                    candidate.Rebar.Get(layer) - BackgroundAs(settings, layer) >
+                    MosaicBuilder.PositiveResidualToleranceCm2PerM &&
                     BoundsIntersect(PlateBounds(candidate), changedBand)).ToList();
                 var losesCoverage = relevantPlates.Any(candidate =>
                 {
@@ -757,7 +764,7 @@ namespace LiraSlabZones.Core
                 {
                     if (!platesById.TryGetValue(id, out var plate)) return false;
                     var requiredAs = plate.Rebar.Get(candidate.Layer) - BackgroundAs(settings, candidate.Layer);
-                    if (!plate.Rebar.Ok || requiredAs <= 0.01) return true;
+                    if (!plate.Rebar.Ok || requiredAs <= MosaicBuilder.PositiveResidualToleranceCm2PerM) return true;
                     var otherZones = zones.Where(other => !ReferenceEquals(other, candidate) &&
                         other.Layer == candidate.Layer &&
                         other.AsCoveredCm2PerM + 1e-6 >= requiredAs).ToList();
@@ -854,7 +861,8 @@ namespace LiraSlabZones.Core
                     Covers(moving, plate.Centroid)).ToList();
                 if (moving.NodeIds.Count == 0)
                     moving.NodeIds = platesById.Values.Where(plate => plate.Rebar.Ok &&
-                        plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) > 0.01 &&
+                        plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) >
+                        MosaicBuilder.PositiveResidualToleranceCm2PerM &&
                         Covers(moving, plate.Centroid)).Select(plate => plate.Id).ToList();
                 moving.ElementId = moving.NodeIds.FirstOrDefault();
                 moving.Comment = $"зазор {Math.Min(moving.BarStepMm, reference.BarStepMm)} мм создан автоматически";
@@ -1645,26 +1653,27 @@ namespace LiraSlabZones.Core
 
         public static AdditionalZone? Create(
             AdditionalZone template, double minX, double maxX, double minY, double maxY,
-            IList<Point3> slab)
+            IList<Point3> slab, bool clipToSlab = true)
         {
             var zone = Copy(template);
             zone.NodeIds.Clear();
             zone.ElementId = 0;
             zone.Comment = "создано в предпросмотре";
-            return ApplyClipped(zone, Rectangle(minX, maxX, minY, maxY, template.LevelZM), slab)
+            return ApplyEditedContour(zone, Rectangle(minX, maxX, minY, maxY, template.LevelZM), slab, clipToSlab)
                 ? zone
                 : null;
         }
 
-        public static AdditionalZone? Merge(AdditionalZone first, AdditionalZone second, IList<Point3> slab)
+        public static AdditionalZone? Merge(AdditionalZone first, AdditionalZone second, IList<Point3> slab,
+            bool clipToSlab = true)
         {
             if (first.Layer != second.Layer || first.Direction != second.Direction)
                 return null;
             var paths = new Paths64 { ToPath(first.Contour), ToPath(second.Contour) };
             var union = Clipper.Union(paths, FillRule.NonZero);
-            var clipped = IntersectWithSlab(union, slab);
-            if (clipped.Count != 1) return null;
-            var path = Largest(clipped);
+            var mergedPaths = clipToSlab ? IntersectWithSlab(union, slab) : union;
+            if (mergedPaths.Count != 1) return null;
+            var path = Largest(mergedPaths);
             if (path == null) return null;
 
             var governing = first.AsCoveredCm2PerM >= second.AsCoveredCm2PerM ? first : second;
@@ -1679,7 +1688,8 @@ namespace LiraSlabZones.Core
         }
 
         public static List<AdditionalZone> Split(
-            AdditionalZone zone, double coordinateM, bool verticalCut, IList<Point3> slab)
+            AdditionalZone zone, double coordinateM, bool verticalCut, IList<Point3> slab,
+            bool clipToSlab = true)
         {
             var minX = zone.Contour.Min(p => p.X);
             var maxX = zone.Contour.Max(p => p.X);
@@ -1704,7 +1714,8 @@ namespace LiraSlabZones.Core
                 var pieces = Clipper.Intersect(
                     new Paths64 { ToPath(zone.Contour) },
                     new Paths64 { ToPath(cutter) }, FillRule.NonZero);
-                var path = Largest(IntersectWithSlab(pieces, slab));
+                var splitPaths = clipToSlab ? IntersectWithSlab(pieces, slab) : pieces;
+                var path = Largest(splitPaths);
                 if (path == null) continue;
                 var copy = Copy(zone);
                 copy.Comment = "разделено в предпросмотре";
@@ -1722,6 +1733,15 @@ namespace LiraSlabZones.Core
             var path = Largest(clipped);
             if (path == null) return false;
             SetContour(zone, FromPath(path, zone.LevelZM));
+            return zone.LengthM > 0.05 && zone.WidthM > 0.05;
+        }
+
+        private static bool ApplyEditedContour(
+            AdditionalZone zone, IList<Point3> contour, IList<Point3> slab, bool clipToSlab)
+        {
+            if (clipToSlab) return ApplyClipped(zone, contour, slab);
+            if (contour == null || contour.Count < 3) return false;
+            SetContour(zone, contour.ToList());
             return zone.LengthM > 0.05 && zone.WidthM > 0.05;
         }
 

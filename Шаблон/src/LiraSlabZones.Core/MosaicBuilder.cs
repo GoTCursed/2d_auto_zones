@@ -30,6 +30,8 @@ namespace LiraSlabZones.Core
     /// <summary>Строит регулярную мозаику As−фон из КЭ пластин.</summary>
     public static class MosaicBuilder
     {
+        public const double PositiveResidualToleranceCm2PerM = 1e-9;
+
         public static MosaicGrid Build(
             IList<LiraPlateElement> plates,
             RebarLayer layer,
@@ -37,8 +39,11 @@ namespace LiraSlabZones.Core
             int cellMm,
             double levelZM)
         {
-            var ok = plates.Where(p => p.Rebar.Ok).ToList();
-            if (ok.Count == 0)
+            var selectedLevel = MeshBoundary.FilterNearestLevel(plates, levelZM);
+            var levelPlates = selectedLevel.Plates;
+            levelZM = selectedLevel.ElevationZM;
+            var ok = levelPlates.Where(p => p.Rebar.Ok).ToList();
+            if (levelPlates.Count == 0 || ok.Count == 0)
             {
                 return new MosaicGrid
                 {
@@ -52,7 +57,7 @@ namespace LiraSlabZones.Core
             }
 
             var cellM = cellMm / 1000.0;
-            var allPoints = ok.SelectMany(p => p.Contour != null && p.Contour.Count >= 3
+            var allPoints = levelPlates.SelectMany(p => p.Contour != null && p.Contour.Count >= 3
                 ? p.Contour
                 : new List<Point3> { p.Centroid }).ToList();
             var minX = allPoints.Min(p => p.X);
@@ -82,7 +87,7 @@ namespace LiraSlabZones.Core
             foreach (var p in ok)
             {
                 var asAdd = p.Rebar.Get(layer) - asMainCm2PerM;
-                if (asAdd <= 0.01) continue;
+                if (asAdd <= PositiveResidualToleranceCm2PerM) continue;
                 var contour = p.Contour;
                 if (contour == null || contour.Count < 3)
                 {

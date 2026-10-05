@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $build = Join-Path $root "src\LiraSlabZones.PreviewHost\bin\x64\$Configuration\net48"
 Add-Type -AssemblyName PresentationCore, PresentationFramework, WindowsBase
 Add-Type -Path (Join-Path $build 'Newtonsoft.Json.dll')
@@ -1019,6 +1019,64 @@ Assert ($singleLarge.Count -eq 0) 'One colored FE was counted as several raster 
 Assert ($twoElements.Count -gt 0) 'Two colored FE did not satisfy MinActiveElements=2.'
 $approxSettings.MinActiveElements = 0
 Write-Host 'PASS minimum FE counts unique colored finite elements'
+
+$mosaicInput = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$mosaicActivePlate = New-ContourPlate 2001 1.0 2.2 1.0 2.2
+$mosaicInactivePlate = New-ContourPlate 2002 4.0 4.4 1.0 1.4
+$mosaicOtherLevelPlate = New-ContourPlate 2003 10.0 11.0 10.0 11.0
+foreach ($entry in @(
+    @{ Plate = $mosaicActivePlate; Z = 3.0 },
+    @{ Plate = $mosaicInactivePlate; Z = 3.0 },
+    @{ Plate = $mosaicOtherLevelPlate; Z = 6.0 }
+)) {
+    $entry.Plate.Centroid = [LiraSlabZones.Core.Point3]::new(
+        $entry.Plate.Centroid.X, $entry.Plate.Centroid.Y, $entry.Z)
+    for ($i = 0; $i -lt $entry.Plate.Contour.Count; $i++) {
+        $point = $entry.Plate.Contour[$i]
+        $entry.Plate.Contour[$i] = [LiraSlabZones.Core.Point3]::new($point.X, $point.Y, $entry.Z)
+    }
+}
+$mosaicActivePlate.Rebar.Ok = $true
+$mosaicActivePlate.Rebar.As2 = 0.005
+$mosaicOtherLevelPlate.Rebar.Ok = $true
+$mosaicOtherLevelPlate.Rebar.As2 = 20
+$mosaicInput.Add($mosaicActivePlate)
+$mosaicInput.Add($mosaicInactivePlate)
+$mosaicInput.Add($mosaicOtherLevelPlate)
+$mosaicGrid = [LiraSlabZones.Core.MosaicBuilder]::Build(
+    $mosaicInput, [LiraSlabZones.Core.RebarLayer]::As2, 0, 400, 3.0)
+$mosaicIds = [Collections.Generic.HashSet[int]]::new()
+$mosaicActiveCellCount = 0
+for ($iy = 0; $iy -lt $mosaicGrid.Ny; $iy++) {
+    for ($ix = 0; $ix -lt $mosaicGrid.Nx; $ix++) {
+        if ($mosaicGrid.Values[$iy][$ix] -le
+            [LiraSlabZones.Core.MosaicBuilder]::PositiveResidualToleranceCm2PerM) { continue }
+        $mosaicActiveCellCount++
+        foreach ($id in $mosaicGrid.PlateIds[$iy][$ix]) { [void]$mosaicIds.Add($id) }
+        Assert ([Math]::Abs($mosaicGrid.Values[$iy][$ix] - 0.005) -lt 1e-9) `
+            'Mosaic cell value was not the positive residual over background As.'
+    }
+}
+Assert ($mosaicActiveCellCount -gt 1) 'A large FE was not rasterized into all intersected mosaic cells.'
+Assert ($mosaicIds.Count -eq 1 -and $mosaicIds.Contains(2001)) `
+    'Mosaic IDs counted one FE more than once or included a non-positive / other-level FE.'
+Assert ($mosaicGrid.Nx -lt 20 -and $mosaicGrid.Ny -lt 20) `
+    'Mosaic bounds included finite elements from a different elevation.'
+Assert ($mosaicGrid.PlateCentroids.ContainsKey(2001) -and
+    -not $mosaicGrid.PlateCentroids.ContainsKey(2003)) `
+    'Mosaic finite-element lookup contains an element from another elevation.'
+$neighborFlags = [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Static
+$neighborMethod = [LiraSlabZones.Core.ZoneLayoutEngine].GetMethod('OrderedNeighbors', $neighborFlags)
+Assert ($null -ne $neighborMethod) 'Directional mosaic traversal helper was not found.'
+$xNeighbors = @($neighborMethod.Invoke($null, [object[]]@(1, 1, [LiraSlabZones.Core.ZoneDirection]::X)))
+$yNeighbors = @($neighborMethod.Invoke($null, [object[]]@(1, 1, [LiraSlabZones.Core.ZoneDirection]::Y)))
+Assert ($xNeighbors.Count -eq 4 -and $xNeighbors[0].Item1 -eq 0 -and
+    $xNeighbors[1].Item1 -eq 2 -and $xNeighbors[2].Item2 -eq 2 -and
+    $xNeighbors[3].Item2 -eq 0) 'X layout did not visit horizontal neighbors first.'
+Assert ($yNeighbors.Count -eq 4 -and $yNeighbors[0].Item2 -eq 2 -and
+    $yNeighbors[1].Item2 -eq 0 -and $yNeighbors[2].Item1 -eq 0 -and
+    $yNeighbors[3].Item1 -eq 2) 'Y layout did not visit vertical neighbors top-to-bottom first.'
+Write-Host 'PASS level-scoped mosaic preserves positive residuals and unique FE identities'
 
 # Geometry cache returns defensive copies and spatial index limits candidate lookup.
 $geometryA = [LiraSlabZones.Core.SlabGeometryCache]::Get($trianglePair)

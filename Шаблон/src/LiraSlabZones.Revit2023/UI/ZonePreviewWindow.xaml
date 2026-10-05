@@ -73,7 +73,7 @@
           </StackPanel>
         </GroupBox>
 
-        <GroupBox Header="Фоновое армирование (Ø / шаг)">
+        <GroupBox Header="Эталонные стержни (фон: Ø / шаг)">
           <StackPanel>
             <TextBlock Text="Низ (As1 и As2)" FontWeight="SemiBold" Margin="0,0,0,2"/>
             <Grid Margin="0,0,0,6">
@@ -127,7 +127,7 @@
           </StackPanel>
         </GroupBox>
 
-        <GroupBox Header="Семейства зон (из проекта Revit)">
+        <GroupBox Header="Семейства зон (архивный режим)" Visibility="Collapsed">
           <StackPanel>
             <TextBlock TextWrapping="Wrap" Foreground="#6B7280" FontSize="11" Margin="0,0,0,4"
                        Text="Имена семейств, уже загруженных в проект. Плагин .rfa не подгружает. Сохраняются в каталоге Addins текущей версии Revit."/>
@@ -150,15 +150,18 @@
           </StackPanel>
         </GroupBox>
 
-        <GroupBox Header="Автораскладка зон">
+        <GroupBox Header="Анализ пятен">
           <StackPanel>
             <TextBlock x:Name="TxtLayoutGate" TextWrapping="Wrap" Foreground="#B45309" Margin="0,0,0,6"
                        Text="Допки не раскладываются, пока не выбрана плита, не задан фон (низ+верх) и класс бетона."/>
-            <CheckBox x:Name="ChkAutoLayout" Content="Автораскладка (SUM-30…34)" IsChecked="True"
+            <CheckBox x:Name="ChkAutoLayout" Content="Анализ пятен (размещение отключено)" IsChecked="True" IsEnabled="False"
                       Checked="SettingsChanged" Unchecked="SettingsChanged"/>
-            <CheckBox x:Name="ChkReverseDirections" Content="Реверс направлений зон (As1/As3 → Y)"
-                      ToolTip="As1 и As3 раскладываются по Y; As2 и As4 — по X"
+            <CheckBox x:Name="ChkReverseDirections" Content="Реверс приоритета обхода (As1/As3 → Y)"
+                      ToolTip="Меняет приоритет обхода соседей для As1/As3 и As2/As4"
                       Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+            <CheckBox x:Name="ChkAveragePeaks" Content="Осреднять пики"
+                      ToolTip="Для подбора арматуры усреднять значение каждой ячейки с соседями по мозаике. Выключено — брать исходный максимум пятна."
+                      IsChecked="False" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
             <TextBlock Text="Детализация: Max → Min (как в настройках увязки)"/>
             <Slider x:Name="SldDetail" Minimum="0" Maximum="1" Value="0"
                     TickFrequency="0.25" IsSnapToTickEnabled="True"
@@ -166,22 +169,22 @@
                     ValueChanged="DetailChanged"/>
             <TextBlock x:Name="TxtDetail" Text="Max" HorizontalAlignment="Right" Foreground="#6B7280"/>
             <TextBlock Text="Max · 4 · 3 · 2 · Min" FontSize="10" Foreground="#9CA3AF" HorizontalAlignment="Stretch"/>
-              <CheckBox x:Name="ChkBarStep100" Content="Разрешить шаги 100 и 200 мм"
+              <CheckBox x:Name="ChkBarStep100" Content="Разрешить шаги 100 и 200 мм" Visibility="Collapsed"
                       Checked="SettingsChanged" Unchecked="SettingsChanged"/>
-            <TextBlock Text="Класс бетона (анкеровка → длина SUM-3)"/>
+            <TextBlock Text="Класс бетона (анкеровка / нахлёст)"/>
             <ComboBox x:Name="CmbConcrete" Height="26" Margin="0,0,0,4" SelectionChanged="SettingsChanged">
               <ComboBoxItem Content="—" IsSelected="True"/>
               <ComboBoxItem Content="B15"/><ComboBoxItem Content="B20"/>
               <ComboBoxItem Content="B25"/>
               <ComboBoxItem Content="B30"/><ComboBoxItem Content="B35"/><ComboBoxItem Content="B40"/>
             </ComboBox>
-            <TextBlock Text="Длины зон SUM-3, мм:" FontSize="11" Foreground="#6B7280"/>
+            <TextBlock Text="Длины зон SUM-3, мм:" FontSize="11" Foreground="#6B7280" Visibility="Collapsed"/>
             <TextBlock Text="1460 · 1950 · 2340 · 2900 · 3900 · 4680 · 5850 · 7800 · 8800 · 11700"
-                       FontSize="10" TextWrapping="Wrap" Foreground="#9CA3AF" Margin="0,0,0,4"/>
+                       FontSize="10" TextWrapping="Wrap" Foreground="#9CA3AF" Margin="0,0,0,4" Visibility="Collapsed"/>
             <TextBlock Text="Ячейка мозаики, мм"/>
             <TextBox x:Name="TbGridCell" Text="300" LostFocus="SettingsChanged"/>
-            <TextBlock Text="Толщина плиты / защитные слои, мм"/>
-            <Grid>
+            <TextBlock Text="Толщина плиты / защитные слои, мм" Visibility="Collapsed"/>
+            <Grid Visibility="Collapsed">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
               </Grid.ColumnDefinitions>
@@ -192,20 +195,20 @@
           </StackPanel>
         </GroupBox>
 
-        <GroupBox Header="Параметры зон / изополя">
+        <GroupBox Header="Параметры пятен">
           <StackPanel>
             <TextBlock Text="Мин. ширина зоны, мм (0 = нет)"/>
             <TextBox x:Name="TbMinW" Text="0" LostFocus="SettingsChanged"
                      ToolTip="Как в SmartRebar. Пример: 800"/>
-            <TextBlock Text="Макс. ширина зоны, мм (0 = нет)"/>
-            <TextBox x:Name="TbMaxW" Text="0" LostFocus="SettingsChanged"
+            <TextBlock Text="Макс. ширина зоны, мм (0 = нет)" Visibility="Collapsed"/>
+            <TextBox x:Name="TbMaxW" Text="0" Visibility="Collapsed" LostFocus="SettingsChanged"
                      ToolTip="Ограничение ширины перпендикулярно стержням. Пример: 2000"/>
-            <TextBlock Text="Мин. длина зоны, мм (0 = SUM-3 мин.)"/>
-            <TextBox x:Name="TbMinL" Text="0" LostFocus="SettingsChanged"
+            <TextBlock Text="Мин. длина зоны, мм (0 = SUM-3 мин.)" Visibility="Collapsed"/>
+            <TextBox x:Name="TbMinL" Text="0" Visibility="Collapsed" LostFocus="SettingsChanged"
                      ToolTip="Минимальная длина стержня с анкеровкой. Пример: 1460 или 1950"/>
-            <TextBlock Text="Мин. число КЭ в зоне (0 = нет)"/>
+            <TextBlock Text="Мин. число КЭ в пятне (0 = нет)"/>
             <TextBox x:Name="TbMinFe" Text="0" LostFocus="SettingsChanged"/>
-            <TextBlock Text="Шаг As изополей, см²/м (интервал цвета)"/>
+            <TextBlock Text="Шаг As цвета пятна, см²/м"/>
             <Slider x:Name="SldVis" Minimum="0" Maximum="25" Value="1" TickFrequency="1"
                     IsSnapToTickEnabled="True" ValueChanged="SettingsChanged"/>
             <TextBlock x:Name="TxtVis" Text="1" HorizontalAlignment="Right" Foreground="#6B7280"/>
@@ -225,6 +228,7 @@
           <StackPanel>
             <CheckBox x:Name="ChkShowMesh" Content="Сетка КЭ (как в ЛИРЕ)" IsChecked="True" Checked="Redraw" Unchecked="Redraw"/>
             <CheckBox x:Name="ChkShowIso" Content="Изополя As (фон КЭ)" IsChecked="True" Checked="Redraw" Unchecked="Redraw"/>
+            <CheckBox x:Name="ChkShowPatches" Content="Заливка пятен" IsChecked="False" Visibility="Collapsed" Checked="Redraw" Unchecked="Redraw"/>
             <CheckBox x:Name="ChkShowAxes" Content="Оси из ЛИРЫ" IsChecked="False" Checked="Redraw" Unchecked="Redraw"/>
             <TextBlock Text="Смещение X, м"/>
             <TextBox x:Name="TbOffX" Text="0" LostFocus="TransformChanged"/>
@@ -250,8 +254,8 @@
 
         <GroupBox Header="Действия">
           <StackPanel>
-            <Button Content="Пересчитать зоны" Style="{StaticResource PrimaryBtn}" Click="BtnRebuild_Click"/>
-            <Button Content="Сохранить JSON зон…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveJson_Click"/>
+            <Button Content="Пересчитать пятна" Style="{StaticResource PrimaryBtn}" Click="BtnRebuild_Click"/>
+            <Button x:Name="BtnSaveJson" Content="Сохранить JSON зон…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveJson_Click"/>
             <Button Content="Сохранить JSON всех плит…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveAllPlatesJson_Click"/>
             <Button x:Name="BtnPlace" Content="Разместить в Revit" Style="{StaticResource PrimaryBtn}" Click="BtnPlace_Click" IsEnabled="False"/>
           </StackPanel>
@@ -271,15 +275,15 @@
           <TextBlock x:Name="TxtTitle" Text="Плита — превью" FontWeight="SemiBold" FontSize="14"/>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="↖" Width="28" Margin="0,0,3,0" Click="BtnEditSelect_Click" ToolTip="Выбор зоны"/>
-            <Button Content="✥" Width="28" Margin="0,0,3,0" Click="BtnEditMove_Click" ToolTip="Переместить: протяните выбранную зону"/>
-            <Button Content="↔" Width="28" Margin="0,0,3,0" Click="BtnEditResize_Click" ToolTip="Изменить размер: перетащите край зоны"/>
-            <Button Content="+▭" Width="34" Margin="0,0,3,0" Click="BtnEditCreate_Click" ToolTip="Создать зону рамкой; свойства берутся с выбранной зоны"/>
-            <Button Content="┆" Width="28" Margin="0,0,3,0" Click="BtnEditSplit_Click" ToolTip="Разделить зону в точке клика"/>
-            <Button Content="⊥" Width="28" Margin="0,0,3,0" Click="BtnEditPerpendicular_Click"
+            <Button x:Name="BtnEditMove" Content="✥" Width="28" Margin="0,0,3,0" Click="BtnEditMove_Click" ToolTip="Переместить: протяните выбранную зону"/>
+            <Button x:Name="BtnEditResize" Content="↔" Width="28" Margin="0,0,3,0" Click="BtnEditResize_Click" ToolTip="Изменить размер: перетащите край зоны"/>
+            <Button x:Name="BtnEditCreate" Content="+▭" Width="34" Margin="0,0,3,0" Click="BtnEditCreate_Click" ToolTip="Создать зону рамкой; свойства берутся с выбранной зоны"/>
+            <Button x:Name="BtnEditSplit" Content="┆" Width="28" Margin="0,0,3,0" Click="BtnEditSplit_Click" ToolTip="Разделить зону в точке клика"/>
+            <Button x:Name="BtnEditPerpendicular" Content="⊥" Width="28" Margin="0,0,3,0" Click="BtnEditPerpendicular_Click"
                     ToolTip="Один раз разделить зону перпендикулярно выбранной грани"/>
-            <Button Content="∪" Width="28" Margin="0,0,3,0" Click="BtnEditMerge_Click" ToolTip="Объединить две последовательно выбранные зоны"/>
-            <Button Content="↔|" Width="34" Margin="0,0,3,0" Click="BtnEditGap_Click" ToolTip="Создать зазор: первая зона перемещается от второй на меньший шаг"/>
-            <Button Content="×" Width="28" Margin="0,0,10,0" Click="BtnEditDelete_Click" ToolTip="Удалить зону"/>
+            <Button x:Name="BtnEditMerge" Content="∪" Width="28" Margin="0,0,3,0" Click="BtnEditMerge_Click" ToolTip="Объединить две последовательно выбранные зоны"/>
+            <Button x:Name="BtnEditGap" Content="↔|" Width="34" Margin="0,0,3,0" Click="BtnEditGap_Click" ToolTip="Создать зазор: первая зона перемещается от второй на меньший шаг"/>
+            <Button x:Name="BtnEditDelete" Content="×" Width="28" Margin="0,0,10,0" Click="BtnEditDelete_Click" ToolTip="Удалить зону"/>
             <ComboBox x:Name="CmbDiagnostics" Width="132" Height="24" Margin="0,0,10,0"
                       SelectedIndex="0" SelectionChanged="CmbDiagnostics_SelectionChanged"
                       ToolTip="Фильтр диагностической подсветки">
@@ -329,10 +333,11 @@
       <GroupBox Header="Журнал" DockPanel.Dock="Bottom" Height="160">
         <ListBox x:Name="LstLog" FontSize="11"/>
       </GroupBox>
-      <GroupBox Header="Выбранная зона" >
+      <GroupBox x:Name="GrpSelectedZone" Header="Выбранная зона">
         <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel>
           <TextBlock x:Name="TxtZoneInfo" TextWrapping="Wrap" FontSize="12" Text="Кликните зону на холсте"/>
+          <StackPanel x:Name="PanelZoneEditing">
           <Separator Margin="0,8,0,8"/>
           <TextBlock Text="Диаметр, мм" FontSize="11" Foreground="#6B7280"/>
           <Button Content="Доступные диаметры" Click="BtnZoneDiameters_Click" Margin="0,3,0,4"/>
@@ -380,6 +385,7 @@
           <ComboBox x:Name="CmbSelectedZoneFamilyName" IsEditable="True" Margin="0,4,0,4"
                     ToolTip="Имя загруженного в проект семейства; допускается ручной ввод"/>
           <Button Content="Применить семейство" Click="BtnApplyZoneFamily_Click"/>
+          </StackPanel>
         </StackPanel>
         </ScrollViewer>
       </GroupBox>

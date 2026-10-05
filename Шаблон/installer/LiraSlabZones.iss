@@ -1,4 +1,4 @@
-; LiraSlabZones — установщик add-in Revit 2023
+; LiraSlabZones — установщик add-in Revit 2022/2023/2025/2026
 ; Сборка: ISCC.exe installer\LiraSlabZones.iss
 
 #define MyAppName "LiraSlabZones"
@@ -23,7 +23,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayName=LiraSlabZones (Revit 2023)
+UninstallDisplayName=LiraSlabZones (Revit 2022/2023/2025/2026)
 InfoBeforeFile=README-INSTALL.txt
 SetupIconFile=
 CloseApplications=no
@@ -44,8 +44,10 @@ Source: "..\dist\stage\data\*"; DestDir: "{app}"; Flags: ignoreversion recursesu
 ; PreviewHost (опциональный просмотр без Revit)
 Source: "..\dist\stage\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Add-in → %APPDATA%\Autodesk\Revit\Addins\2023\LiraSlabZones
-Source: "..\dist\stage\addin\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2023\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\stage\addin\2022\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2022\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\stage\addin\2023\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2023\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\stage\addin\2025\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2025\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\stage\addin\2026\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2026\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\LiraSlabZones Preview"; Filename: "{app}\tools\{#MyAppExeName}"
@@ -53,13 +55,13 @@ Name: "{group}\Удалить LiraSlabZones"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\LiraSlabZones Preview"; Filename: "{app}\tools\{#MyAppExeName}"; Tasks: desktopicon
 
 [Code]
-function WriteAddinManifest: Boolean;
+function WriteAddinManifest(Version: string): Boolean;
 var
   AddinDir, AddinFile, DllPath, Xml: string;
 begin
-  AddinDir := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\2023');
+  AddinDir := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\' + Version);
   ForceDirectories(AddinDir);
-  DllPath := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\2023\LiraSlabZones\LiraSlabZones.Revit2023.dll');
+  DllPath := AddinDir + '\LiraSlabZones\LiraSlabZones.Revit' + Version + '.dll';
   AddinFile := AddinDir + '\LiraSlabZones.addin';
   Xml :=
     '<?xml version="1.0" encoding="utf-8"?>' + #13#10 +
@@ -82,21 +84,35 @@ begin
   begin
     ForceDirectories(ExpandConstant('{app}\output'));
     ForceDirectories(ExpandConstant('{app}\config'));
-    if not WriteAddinManifest then
+    if not WriteAddinManifest('2022') then
+      MsgBox('Не удалось записать манифест Revit 2022.', mbError, MB_OK);
+    if not WriteAddinManifest('2023') then
+      MsgBox('Не удалось записать манифест Revit 2023.', mbError, MB_OK);
+    if not WriteAddinManifest('2025') then
+      MsgBox('Не удалось записать манифест Revit 2025.', mbError, MB_OK);
+    if not WriteAddinManifest('2026') then
       MsgBox('Не удалось записать LiraSlabZones.addin. Проверьте права на %APPDATA%.', mbError, MB_OK);
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  AddinFile, AddinFolder: string;
+  AddinFile, AddinFolder, Version: string;
+  I: Integer;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    AddinFile := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\2023\LiraSlabZones.addin');
-    AddinFolder := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\2023\LiraSlabZones');
-    if FileExists(AddinFile) then DeleteFile(AddinFile);
-    if DirExists(AddinFolder) then DelTree(AddinFolder, True, True, True);
+    for I := 0 to 3 do
+    begin
+      if I = 0 then Version := '2022'
+      else if I = 1 then Version := '2023'
+      else if I = 2 then Version := '2025'
+      else Version := '2026';
+      AddinFile := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\' + Version + '\LiraSlabZones.addin');
+      AddinFolder := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\' + Version + '\LiraSlabZones');
+      if FileExists(AddinFile) then DeleteFile(AddinFile);
+      if DirExists(AddinFolder) then DelTree(AddinFolder, True, True, True);
+    end;
   end;
 end;
 

@@ -1,30 +1,34 @@
-# Install LiraSlabZones Revit 2023 add-in
+param([int[]]$Versions = @(2022, 2023, 2025, 2026))
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$dll = Get-ChildItem -LiteralPath (Join-Path $root 'src\LiraSlabZones.Revit2023\bin') -Recurse -Filter 'LiraSlabZones.Revit2023.dll' -ErrorAction SilentlyContinue |
-    Select-Object -First 1
+foreach ($version in $Versions) {
+    if ($version -notin @(2022, 2023, 2025, 2026)) {
+        throw "Unsupported Revit version: $version"
+    }
 
-if (-not $dll) {
-    Write-Host 'Build first: dotnet build LiraSlabZones.sln -c Debug -p:Platform=x64'
-    exit 1
-}
+    $framework = if ($version -ge 2025) { 'net8.0-windows' } else { 'net48' }
+    $project = "LiraSlabZones.Revit$version"
+    $src = Join-Path $root "src\$project\bin\x64\Release\$framework"
+    $sourceDll = Join-Path $src "$project.dll"
+    if (-not (Test-Path -LiteralPath $sourceDll)) {
+        throw "Build is missing: $sourceDll. Run dotnet build LiraSlabZones.sln -c Release -p:Platform=x64"
+    }
 
-$src = $dll.DirectoryName
-$addinDir = Join-Path $env:APPDATA 'Autodesk\Revit\Addins\2023'
-$deploy = Join-Path $addinDir 'LiraSlabZones'
-New-Item -ItemType Directory -Force -Path $deploy | Out-Null
-Copy-Item -Path (Join-Path $src '*.dll') -Destination $deploy -Force
+    $addinDir = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$version"
+    $deploy = Join-Path $addinDir 'LiraSlabZones'
+    New-Item -ItemType Directory -Force -Path $deploy | Out-Null
+    Copy-Item -Path (Join-Path $src '*.dll') -Destination $deploy -Force
+    Copy-Item -Path (Join-Path $root 'interop\*.dll') -Destination $deploy -Force
 
-$defCfg = Join-Path $root 'DefaultSettings.cfg'
-if (Test-Path -LiteralPath $defCfg) {
-    Copy-Item -LiteralPath $defCfg -Destination (Join-Path $deploy 'DefaultSettings.cfg') -Force
-} elseif (Test-Path -LiteralPath (Join-Path $src 'DefaultSettings.cfg')) {
-    Copy-Item -LiteralPath (Join-Path $src 'DefaultSettings.cfg') -Destination (Join-Path $deploy 'DefaultSettings.cfg') -Force
-}
+    $defCfg = Join-Path $root 'DefaultSettings.cfg'
+    if (Test-Path -LiteralPath $defCfg) {
+        Copy-Item -LiteralPath $defCfg -Destination (Join-Path $deploy 'DefaultSettings.cfg') -Force
+    }
 
-$targetDll = Join-Path $deploy 'LiraSlabZones.Revit2023.dll'
-$xml = @"
+    $targetDll = Join-Path $deploy "$project.dll"
+    $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
@@ -37,7 +41,6 @@ $xml = @"
   </AddIn>
 </RevitAddIns>
 "@
-[System.IO.File]::WriteAllText((Join-Path $addinDir 'LiraSlabZones.addin'), $xml, [Text.UTF8Encoding]::new($false))
-Write-Host "OK: $deploy"
-Write-Host "User settings: $(Join-Path $addinDir 'LiraSlabZones.cfg')"
-Write-Host 'Restart Revit 2023.'
+    [IO.File]::WriteAllText((Join-Path $addinDir 'LiraSlabZones.addin'), $xml, [Text.UTF8Encoding]::new($false))
+    Write-Host "OK Revit ${version}: $deploy"
+}

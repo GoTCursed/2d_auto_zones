@@ -15,12 +15,22 @@ namespace LiraSlabZones.Revit2023
             if (analysis.Zones == null || analysis.Zones.Count == 0)
                 return 0;
 
+            var overlong = analysis.Zones.Where(RebarTables.ExceedsMaxBarLength).ToList();
+            if (overlong.Count > 0)
+                throw new InvalidOperationException(
+                    $"Размещение остановлено: {overlong.Count} зон превышают 11700 мм " +
+                    $"(№ {string.Join(", ", overlong.Take(10).Select(z => z.ZoneId))}). " +
+                    "Разделите эти зоны в предпросмотре перед размещением.");
+
             var settings = analysis.Settings ?? AppConfig.LoadEffectiveSettings();
             var level = FindNearestLevel(doc, analysis.Zones.First().LevelZM);
             int count = 0;
             var cache = new Dictionary<string, FamilySymbol?>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var group in analysis.Zones.GroupBy(z => settings.GetFamilyName(z.FamilyKind)))
+            foreach (var group in analysis.Zones.GroupBy(z =>
+                string.IsNullOrWhiteSpace(z.FamilyFileName)
+                    ? settings.GetFamilyName(z.FamilyKind)
+                    : AppConfig.StripRfa(z.FamilyFileName)))
             {
                 var familyName = group.Key;
                 if (!cache.TryGetValue(familyName, out var symbol))

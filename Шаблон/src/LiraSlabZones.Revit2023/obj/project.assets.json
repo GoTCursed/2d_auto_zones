@@ -2,6 +2,15 @@
   "version": 4,
   "targets": {
     "net48": {
+      "Clipper2/2.0.0": {
+        "type": "package",
+        "compile": {
+          "lib/netstandard2.0/Clipper2Lib.dll": {}
+        },
+        "runtime": {
+          "lib/netstandard2.0/Clipper2Lib.dll": {}
+        }
+      },
       "Newtonsoft.Json/13.0.3": {
         "type": "package",
         "compile": {
@@ -19,6 +28,7 @@
         "type": "project",
         "framework": ".NETFramework,Version=v4.8",
         "dependencies": {
+          "Clipper2": "2.0.0",
           "Newtonsoft.Json": "13.0.3"
         },
         "compile": {
@@ -31,6 +41,21 @@
     }
   },
   "libraries": {
+    "Clipper2/2.0.0": {
+      "sha512": "2X23RZxJrjRjOSZc20aqXY9jpmHLekDRy4PIMfrsi2LPNzxFYlnuqzX/nLdk77fbURHUeX+gMhUn2a1z9/wMTQ==",
+      "type": "package",
+      "path": "clipper2/2.0.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "License.txt",
+        "README.md",
+        "clipper2.2.0.0.nupkg.sha512",
+        "clipper2.nuspec",
+        "icon.png",
+        "lib/netstandard2.0/Clipper2Lib.dll"
+      ]
+    },
     "Newtonsoft.Json/13.0.3": {
       "sha512": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ==",
       "type": "package",
@@ -122,13 +147,13 @@
         "auditLevel": "low",
         "auditMode": "direct"
       },
-      "SdkAnalysisLevel": "10.0.300"
+      "SdkAnalysisLevel": "10.0.400"
     },
     "frameworks": {
       "net48": {
         "framework": "net48",
         "targetAlias": "net48",
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.302\\RuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.401\\RuntimeIdentifierGraph.json"
       }
     }
   }

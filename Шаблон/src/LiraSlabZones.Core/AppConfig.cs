@@ -19,9 +19,26 @@ namespace LiraSlabZones.Core
         public static string UserConfigDirectory =>
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Autodesk", "Revit", "Addins", "2023");
+                "Autodesk", "Revit", "Addins", DetectRevitVersion());
 
         public static string UserConfigPath => Path.Combine(UserConfigDirectory, UserFileName);
+
+        private static string DetectRevitVersion()
+        {
+            try
+            {
+                var dir = new DirectoryInfo(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!);
+                while (dir != null)
+                {
+                    if (dir.Name.Length == 4 && int.TryParse(dir.Name, out var year) && year >= 2020 && year <= 2100)
+                        return dir.Name;
+                    dir = dir.Parent;
+                }
+            }
+            catch { /* standalone preview and tests use the compatibility default */ }
+
+            return Environment.GetEnvironmentVariable("LIRASLABZONES_REVIT_VERSION") ?? "2023";
+        }
 
         public static string? FindDefaultSettingsPath()
         {

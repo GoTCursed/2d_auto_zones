@@ -193,7 +193,7 @@ namespace LiraSlabZones.Core
                                other.Contour.Min(point => point.Y) <= part.Contour.Min(point => point.Y) + toleranceM &&
                                other.Contour.Max(point => point.Y) >= part.Contour.Max(point => point.Y) - toleranceM;
                     })).ToList();
-                    ZoneEditor.AbsorbNarrowSplitParts(parts, settings.MinZoneWidthM);
+                    ZoneEditor.AbsorbNarrowSplitParts(parts, settings.EffectiveMinZoneWidthM);
                     ZoneEditor.EnforceRequiredGaps(parts, levelPlates, settings, outline, detectedOpenings);
                     var splitCoverageZones = parts.Concat(otherZones
                         .Where(other => other.Layer == zone.Layer)).ToList();
@@ -201,8 +201,8 @@ namespace LiraSlabZones.Core
                         zone, splitCoverageZones, platesById, settings, outline, detectedOpenings);
                     var narrowParts = parts.Where(part =>
                         part.FamilyKind == ZoneFamilyKind.Straight &&
-                        settings.MinZoneWidthM > 0 &&
-                        part.WidthM + 1e-6 < settings.MinZoneWidthM).ToList();
+                        settings.EffectiveMinZoneWidthM > 0 &&
+                        part.WidthM + 1e-6 < settings.EffectiveMinZoneWidthM).ToList();
                     var removableSlivers = narrowParts.Where(sliver => sliver.NodeIds.All(id =>
                         parts.Any(part => !ReferenceEquals(part, sliver) &&
                             part.Layer == sliver.Layer &&
@@ -380,8 +380,9 @@ namespace LiraSlabZones.Core
                     double asReq = plate.Rebar.Get(layer);
                     double asAdd = asReq - asMain;
                     if (asAdd <= MosaicBuilder.PositiveResidualToleranceCm2PerM) continue;
-                    if (settings.MinZoneWidthM > 0 &&
-                        plate.WidthM < settings.MinZoneWidthM && plate.LengthM < settings.MinZoneWidthM)
+                    if (settings.EffectiveMinZoneWidthM > 0 &&
+                        plate.WidthM < settings.EffectiveMinZoneWidthM &&
+                        plate.LengthM < settings.EffectiveMinZoneWidthM)
                         continue;
 
                     bool warnSize =
@@ -396,7 +397,7 @@ namespace LiraSlabZones.Core
                         asAdd,
                         settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36,
                         backgroundDiameter,
-                        settings.UseBarStep100,
+                        settings.AllowedAdditionalBarStepsMm?.ToArray(),
                         settings.ExcludedZoneDiametersMm?.ToArray());
                     var step = option.StepMm;
                     var d = option.DiameterMm;

@@ -51,7 +51,20 @@ namespace LiraSlabZones.Core
             double requiredAsCm2PerM, int maxDiameterMm, int minDiameterMm, bool allowStep100,
             int[]? excludedDiametersMm = null)
         {
-            var steps = allowStep100 ? new[] { 200, 100 } : new[] { 200 };
+            return SelectDiameterAndStep(requiredAsCm2PerM, maxDiameterMm, minDiameterMm,
+                allowStep100 ? new[] { 200, 100 } : new[] { 200 }, excludedDiametersMm);
+        }
+
+        public static (int DiameterMm, int StepMm) SelectDiameterAndStep(
+            double requiredAsCm2PerM, int maxDiameterMm, int minDiameterMm, int[]? allowedStepsMm,
+            int[]? excludedDiametersMm = null)
+        {
+            var steps = (allowedStepsMm ?? new[] { 200, 100 })
+                .Where(step => step == 100 || step == 200)
+                .Distinct()
+                .OrderByDescending(step => step)
+                .ToArray();
+            if (steps.Length == 0) steps = new[] { 200 };
             var options = steps
                 .Select(step =>
                 {

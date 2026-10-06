@@ -169,8 +169,19 @@
                     ValueChanged="DetailChanged"/>
             <TextBlock x:Name="TxtDetail" Text="Max" HorizontalAlignment="Right" Foreground="#6B7280"/>
             <TextBlock Text="Max · 4 · 3 · 2 · Min" FontSize="10" Foreground="#9CA3AF" HorizontalAlignment="Stretch"/>
-              <CheckBox x:Name="ChkBarStep100" Content="Разрешить шаги 100 и 200 мм" Visibility="Collapsed"
-                      Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+            <Button x:Name="BtnAllowedBarSteps" Content="Шаги доп. армирования: 100 / 200 мм"
+                    Style="{StaticResource SecondaryBtn}" Margin="0,4,0,4"
+                    Click="BtnAllowedBarSteps_Click"
+                    ToolTip="Выберите шаги, которые разрешено использовать при автоматическом подборе доп. армирования">
+              <Button.ContextMenu>
+                <ContextMenu>
+                  <MenuItem Header="100 мм" Tag="100" IsCheckable="True" IsChecked="True"
+                            Checked="AllowedBarStepsChanged" Unchecked="AllowedBarStepsChanged"/>
+                  <MenuItem Header="200 мм" Tag="200" IsCheckable="True" IsChecked="True"
+                            Checked="AllowedBarStepsChanged" Unchecked="AllowedBarStepsChanged"/>
+                </ContextMenu>
+              </Button.ContextMenu>
+            </Button>
             <TextBlock Text="Класс бетона (анкеровка / нахлёст)"/>
             <ComboBox x:Name="CmbConcrete" Height="26" Margin="0,0,0,4" SelectionChanged="SettingsChanged">
               <ComboBoxItem Content="—" IsSelected="True"/>
@@ -197,9 +208,9 @@
 
         <GroupBox Header="Параметры пятен">
           <StackPanel>
-            <TextBlock Text="Мин. ширина зоны, мм (0 = нет)"/>
-            <TextBox x:Name="TbMinW" Text="0" LostFocus="SettingsChanged"
-                     ToolTip="Как в SmartRebar. Пример: 800"/>
+            <TextBlock Text="Мин. ширина зоны, мм"/>
+            <TextBox x:Name="TbMinW" Text="300" LostFocus="SettingsChanged"
+                     ToolTip="Не меньше размера ячейки мозаики"/>
             <TextBlock Text="Макс. ширина зоны, мм (0 = нет)" Visibility="Collapsed"/>
             <TextBox x:Name="TbMaxW" Text="0" Visibility="Collapsed" LostFocus="SettingsChanged"
                      ToolTip="Ограничение ширины перпендикулярно стержням. Пример: 2000"/>

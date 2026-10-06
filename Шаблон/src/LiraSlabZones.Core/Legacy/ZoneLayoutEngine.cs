@@ -148,7 +148,7 @@ namespace LiraSlabZones.Core
                 var requiredPeakAs = activeRegion.Max(cell => mosaic.Values[cell.Iy][cell.Ix]);
                 var backgroundDiameter = GetBackgroundDiameter(settings, layer);
                 var barOption = BarCapacity.SelectDiameterAndStep(
-                    requiredPeakAs, maxD, backgroundDiameter, settings.UseBarStep100,
+                    requiredPeakAs, maxD, backgroundDiameter, settings.AllowedAdditionalBarStepsMm?.ToArray(),
                     settings.ExcludedZoneDiametersMm?.ToArray());
                 var dZone = barOption.DiameterMm;
                 var step = barOption.StepMm;
@@ -1641,7 +1641,7 @@ namespace LiraSlabZones.Core
                 var backgroundDiameter = GetBackgroundDiameter(settings, layer);
                 var option = BarCapacity.SelectDiameterAndStep(
                     peak, settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36,
-                    backgroundDiameter, settings.UseBarStep100,
+                    backgroundDiameter, settings.AllowedAdditionalBarStepsMm?.ToArray(),
                     settings.ExcludedZoneDiametersMm?.ToArray());
                 if (option.DiameterMm <= 0) continue;
 

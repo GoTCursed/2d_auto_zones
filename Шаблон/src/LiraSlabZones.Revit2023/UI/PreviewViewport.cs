@@ -637,9 +637,12 @@ namespace LiraSlabZones.Revit2023.UI
 
         private void DrawDiameterLegend(DrawingContext dc)
         {
-            var diameters = _drawZones
-                .Where(item => item.Zone.DiameterMm > 0)
-                .Select(item => item.Zone.DiameterMm)
+            var activeZones = _result?.PatchPreviewOnly == true
+                ? _drawPatchZones.Select(item => item.Zone)
+                : _drawZones.Select(item => item.Zone);
+            var diameters = activeZones
+                .Where(zone => zone.DiameterMm > 0)
+                .Select(zone => zone.DiameterMm)
                 .Distinct()
                 .OrderBy(d => d)
                 .ToList();
@@ -1388,7 +1391,7 @@ namespace LiraSlabZones.Revit2023.UI
                 }
                 var partitions = ZonePatchFramePartitioner.Split(
                     frame.Patches, frame.MinX, frame.MaxX, frame.MinY, frame.MaxY,
-                    Math.Max(0.1, _settings.MinZoneWidthM), frameElements.Values.ToList());
+                    _settings.EffectiveMinZoneWidthM, frameElements.Values.ToList());
                 foreach (var partition in partitions)
                 {
                     var splitFrame = new CachedPatchFrame
@@ -1426,6 +1429,9 @@ namespace LiraSlabZones.Revit2023.UI
             if (!useSavedZones)
             {
                 ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);
+                ZonePatchZoneBuilder.MergeShiftableAdjacentZonesAlongBars(
+                    _patchCandidateZones, patchSourceBounds, _settings);
+                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);
                 var neighborLayout = ZonePatchNeighborLayout.Apply(
                     _patchCandidateZones, patchSourceBounds, patchOuterBounds,
                     _result.Plates, _settings, _result.Outline, _result.Openings);
@@ -1439,9 +1445,6 @@ namespace LiraSlabZones.Revit2023.UI
                             : zone.Comment + "; " + neighborLayout.Warning;
                     }
                 }
-                ZonePatchZoneBuilder.MergeShiftableAdjacentZonesAlongBars(
-                    _patchCandidateZones, patchSourceBounds, _settings);
-                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);
             }
             AssignZoneIds(_patchCandidateZones);
             RefreshPatchFrameZones();

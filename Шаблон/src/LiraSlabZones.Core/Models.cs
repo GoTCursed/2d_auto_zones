@@ -359,8 +359,12 @@ namespace LiraSlabZones.Core
             _ => "SUM-30-Зона дополнительного армирования"
         };
 
-        /// <summary>Минимальная ширина зоны, м (0 = без фильтра). В UI вводится в мм.</summary>
-        public double MinZoneWidthM { get; set; } = 0;
+        /// <summary>Минимальная ширина зоны, м. В UI вводится в мм.</summary>
+        public double MinZoneWidthM { get; set; } = 0.3;
+
+        [Newtonsoft.Json.JsonIgnore]
+        public double EffectiveMinZoneWidthM => Math.Max(
+            Math.Max(0, MinZoneWidthM), Math.Max(1, GridCellMm) / 1000.0);
 
         /// <summary>Максимальная ширина зоны, м (0 = без ограничения). В UI вводится в мм.</summary>
         public double MaxZoneWidthM { get; set; } = 0;
@@ -414,6 +418,8 @@ namespace LiraSlabZones.Core
         public double EdgeOffsetMm { get; set; } = 50;
         /// <summary>Отступ зон от края плиты (контура), мм.</summary>
         public double SlabEdgeInsetMm { get; set; } = 30;
+        /// <summary>Допустимые шаги автоматически подобранного дополнительного армирования, мм.</summary>
+        public List<int> AllowedAdditionalBarStepsMm { get; set; } = new List<int> { 100, 200 };
         /// <summary>true → разрешить подбор из шагов 100 и 200 мм; false → только 200 мм.</summary>
         public bool UseBarStep100 { get; set; }
         /// <summary>Swap layer directions: As1/As3 use Y, As2/As4 use X.</summary>

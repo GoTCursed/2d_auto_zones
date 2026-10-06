@@ -48,6 +48,10 @@ Source: "..\dist\stage\addin\2022\*"; DestDir: "{userappdata}\Autodesk\Revit\Add
 Source: "..\dist\stage\addin\2023\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2023\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\stage\addin\2025\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2025\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\stage\addin\2026\*"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2026\LiraSlabZones"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\addins\2022\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2022"; Flags: ignoreversion
+Source: "..\addins\2023\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2023"; Flags: ignoreversion
+Source: "..\addins\2025\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2025"; Flags: ignoreversion
+Source: "..\addins\2026\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2026"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\LiraSlabZones Preview"; Filename: "{app}\tools\{#MyAppExeName}"
@@ -55,43 +59,12 @@ Name: "{group}\Удалить LiraSlabZones"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\LiraSlabZones Preview"; Filename: "{app}\tools\{#MyAppExeName}"; Tasks: desktopicon
 
 [Code]
-function WriteAddinManifest(Version: string): Boolean;
-var
-  AddinDir, AddinFile, DllPath, Xml: string;
-begin
-  AddinDir := ExpandConstant('{userappdata}\Autodesk\Revit\Addins\' + Version);
-  ForceDirectories(AddinDir);
-  DllPath := AddinDir + '\LiraSlabZones\LiraSlabZones.Revit' + Version + '.dll';
-  AddinFile := AddinDir + '\LiraSlabZones.addin';
-  Xml :=
-    '<?xml version="1.0" encoding="utf-8"?>' + #13#10 +
-    '<RevitAddIns>' + #13#10 +
-    '  <AddIn Type="Application">' + #13#10 +
-    '    <Name>LiraSlabZones</Name>' + #13#10 +
-    '    <Assembly>' + DllPath + '</Assembly>' + #13#10 +
-    '    <AddInId>B7E6C2A1-4F3D-4A9E-9C11-8D2A6F0E5B21</AddInId>' + #13#10 +
-    '    <FullClassName>LiraSlabZones.Revit2023.App</FullClassName>' + #13#10 +
-    '    <VendorId>SUM</VendorId>' + #13#10 +
-    '    <VendorDescription>LIRA to Revit slab additional rebar zones</VendorDescription>' + #13#10 +
-    '  </AddIn>' + #13#10 +
-    '</RevitAddIns>' + #13#10;
-  Result := SaveStringToFile(AddinFile, Xml, False);
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
     ForceDirectories(ExpandConstant('{app}\output'));
     ForceDirectories(ExpandConstant('{app}\config'));
-    if not WriteAddinManifest('2022') then
-      MsgBox('Не удалось записать манифест Revit 2022.', mbError, MB_OK);
-    if not WriteAddinManifest('2023') then
-      MsgBox('Не удалось записать манифест Revit 2023.', mbError, MB_OK);
-    if not WriteAddinManifest('2025') then
-      MsgBox('Не удалось записать манифест Revit 2025.', mbError, MB_OK);
-    if not WriteAddinManifest('2026') then
-      MsgBox('Не удалось записать LiraSlabZones.addin. Проверьте права на %APPDATA%.', mbError, MB_OK);
   end;
 end;
 

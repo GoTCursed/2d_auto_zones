@@ -27,20 +27,12 @@ foreach ($version in $Versions) {
         Copy-Item -LiteralPath $defCfg -Destination (Join-Path $deploy 'DefaultSettings.cfg') -Force
     }
 
-    $targetDll = Join-Path $deploy "$project.dll"
-    $xml = @"
-<?xml version="1.0" encoding="utf-8"?>
-<RevitAddIns>
-  <AddIn Type="Application">
-    <Name>LiraSlabZones</Name>
-    <Assembly>$targetDll</Assembly>
-    <AddInId>B7E6C2A1-4F3D-4A9E-9C11-8D2A6F0E5B21</AddInId>
-    <FullClassName>LiraSlabZones.Revit2023.App</FullClassName>
-    <VendorId>SUM</VendorId>
-    <VendorDescription>LIRA to Revit slab additional rebar zones</VendorDescription>
-  </AddIn>
-</RevitAddIns>
-"@
-    [IO.File]::WriteAllText((Join-Path $addinDir 'LiraSlabZones.addin'), $xml, [Text.UTF8Encoding]::new($false))
+    $manifest = Join-Path $root "addins\$version\LiraSlabZones.addin"
+    if (-not (Test-Path -LiteralPath $manifest)) {
+        throw "Revit add-in manifest is missing: $manifest"
+    }
+
+    Copy-Item -LiteralPath $manifest -Destination (Join-Path $addinDir 'LiraSlabZones.addin') -Force
     Write-Host "OK Revit ${version}: $deploy"
 }
+

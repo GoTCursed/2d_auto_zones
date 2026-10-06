@@ -32,7 +32,14 @@ namespace LiraSlabZones.Core
                 var minY = path.Min(p => p.Y) / Scale;
                 var maxY = path.Max(p => p.Y) / Scale;
                 if (maxX - minX + 1e-6 < minWidth || maxY - minY + 1e-6 < minHeight) continue;
-                result.Add(new OpeningInfo { MinXM = minX, MaxXM = maxX, MinYM = minY, MaxYM = maxY });
+                result.Add(new OpeningInfo
+                {
+                    OpeningId = result.Count + 1,
+                    MinXM = minX,
+                    MaxXM = maxX,
+                    MinYM = minY,
+                    MaxYM = maxY
+                });
             }
             return result;
         }

@@ -55,6 +55,13 @@ namespace LiraSlabZones.Core
             points.Select(p => new Point3(p.X, p.Y, p.Z)).ToList();
 
         private static List<OpeningInfo> Copy(IEnumerable<OpeningInfo> openings) => openings.Select(op =>
-            new OpeningInfo { MinXM = op.MinXM, MaxXM = op.MaxXM, MinYM = op.MinYM, MaxYM = op.MaxYM }).ToList();
+            new OpeningInfo
+            {
+                OpeningId = op.OpeningId,
+                MinXM = op.MinXM,
+                MaxXM = op.MaxXM,
+                MinYM = op.MinYM,
+                MaxYM = op.MaxYM
+            }).ToList();
     }
 }

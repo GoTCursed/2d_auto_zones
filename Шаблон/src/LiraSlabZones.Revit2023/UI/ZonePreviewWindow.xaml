@@ -239,7 +239,7 @@
           <StackPanel>
             <CheckBox x:Name="ChkShowMesh" Content="Сетка КЭ (как в ЛИРЕ)" IsChecked="True" Checked="Redraw" Unchecked="Redraw"/>
             <CheckBox x:Name="ChkShowIso" Content="Изополя As (фон КЭ)" IsChecked="True" Checked="Redraw" Unchecked="Redraw"/>
-            <CheckBox x:Name="ChkShowPatches" Content="Заливка пятен" IsChecked="False" Visibility="Collapsed" Checked="Redraw" Unchecked="Redraw"/>
+            <CheckBox x:Name="ChkShowPatchBoundaries" Content="Пунктирные границы пятен" IsChecked="False" Visibility="Collapsed" Checked="Redraw" Unchecked="Redraw"/>
             <CheckBox x:Name="ChkShowAxes" Content="Оси из ЛИРЫ" IsChecked="False" Checked="Redraw" Unchecked="Redraw"/>
             <TextBlock Text="Смещение X, м"/>
             <TextBox x:Name="TbOffX" Text="0" LostFocus="TransformChanged"/>
@@ -265,6 +265,8 @@
 
         <GroupBox Header="Действия">
           <StackPanel>
+            <Button x:Name="BtnBoundaryEditor" Content="Границы и отверстия…"
+                    Style="{StaticResource SecondaryBtn}" Click="BtnBoundaryEditor_Click" IsEnabled="False"/>
             <Button Content="Пересчитать пятна" Style="{StaticResource PrimaryBtn}" Click="BtnRebuild_Click"/>
             <Button x:Name="BtnSaveJson" Content="Сохранить JSON зон…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveJson_Click"/>
             <Button Content="Сохранить JSON всех плит…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveAllPlatesJson_Click"/>

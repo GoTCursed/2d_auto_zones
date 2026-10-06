@@ -228,6 +228,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ? Viewport.EditableZoneCount > 0 || result.Patches.Count > 0
                 : result.Zones.Count > 0);
             BtnPlace.IsEnabled = _placeCallback != null && editable && !patchMode;
+            BtnBoundaryEditor.IsEnabled = result?.Plates?.Count > 0;
             BtnSaveJson.Content = result?.PatchPreviewOnly == true
                 ? "Сохранить JSON пятен…"
                 : "Сохранить JSON зон…";
@@ -246,7 +247,7 @@ namespace LiraSlabZones.Revit2023.UI
             BtnEditDelete.IsEnabled = editable;
             CmbDiagnostics.IsEnabled = result?.PatchPreviewOnly != true;
             ChkShowIso.Visibility = result?.PatchPreviewOnly == true ? Visibility.Collapsed : Visibility.Visible;
-            ChkShowPatches.Visibility = patchMode ? Visibility.Visible : Visibility.Collapsed;
+            ChkShowPatchBoundaries.Visibility = patchMode ? Visibility.Visible : Visibility.Collapsed;
         }
 
         /// <summary>Имя прямой зоны из ComboBox (из проекта или вручную).</summary>
@@ -372,7 +373,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ChkShowIso.IsChecked == true,
                 ChkShowAxes.IsChecked == true,
                 fitView: fitView,
-                showPatches: ChkShowPatches.IsChecked == true);
+                showPatchBoundaries: ChkShowPatchBoundaries.IsChecked == true);
             TxtZoom.Text = $"{Viewport.Zoom * 100:0}%";
         }
 
@@ -437,6 +438,29 @@ namespace LiraSlabZones.Revit2023.UI
         private void BtnRebuild_Click(object sender, RoutedEventArgs e) =>
             RebuildZonesPreservingView(fromUi: true);
 
+        private void BtnBoundaryEditor_Click(object sender, RoutedEventArgs e)
+        {
+            if (_result == null || _result.Plates.Count == 0) return;
+            try
+            {
+                var editor = new BoundaryEditorWindow(_result) { Owner = this };
+                if (editor.ShowDialog() != true) return;
+
+                _result.Openings = editor.EditedOpenings;
+                _result.BoundaryConditions = editor.EditedBoundaries;
+                _result.UseCustomOpenings = true;
+                RebuildZonesPreservingView(fromUi: false);
+                Log($"Геометрия обновлена: отверстий {_result.Openings.Count}, границ {_result.BoundaryConditions.Count}", "ok");
+            }
+            catch (Exception ex)
+            {
+                Log($"Ошибка редактора границ и отверстий: {ex}", "error");
+                MessageBox.Show(this,
+                    $"Не удалось открыть или применить редактор границ и отверстий.\n{ex.Message}",
+                    "Ошибка редактора", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private static bool TryGetLayerOnlyChanges(
             AnalysisSettings? oldSettings, AnalysisSettings newSettings,
             out HashSet<RebarLayer> changed)
@@ -485,6 +509,8 @@ namespace LiraSlabZones.Revit2023.UI
             var levels = _result.AvailableLevels;
             var axes = _result.Axes;
             var openings = _result.Openings;
+            var useCustomOpenings = _result.UseCustomOpenings;
+            var boundaries = _result.BoundaryConditions;
             var units = _result.UnitsNote;
 
             AnalysisResult rebuilt;
@@ -504,11 +530,13 @@ namespace LiraSlabZones.Revit2023.UI
                     _result.ElevationZM,
                     _result.ElevationLabel,
                     skipLevelFilter: true,
-                    openings: openings);
+                    openings: openings,
+                    useCustomOpenings: useCustomOpenings);
                 rebuilt.AllPlates = all;
                 rebuilt.AvailableLevels = levels;
             }
 
+            rebuilt.BoundaryConditions = boundaries;
             rebuilt.UnitsNote = units;
             rebuilt.Settings = settings;
             _result = rebuilt;
@@ -614,6 +642,7 @@ namespace LiraSlabZones.Revit2023.UI
             var levels = _result.AvailableLevels;
 
             var rebuilt = SlabZoneAnalyzer.RebuildForElevation(_result, level.ZM, settings);
+            var boundariesForLevel = rebuilt.BoundaryConditions;
             // перенести As с AllPlates (уже прочитаны при анализе)
             var byId = new Dictionary<int, PlateReinforcement>();
             foreach (var p in all)
@@ -630,7 +659,10 @@ namespace LiraSlabZones.Revit2023.UI
                 rebuilt.Axes,
                 rebuilt.ElevationZM,
                 level.Label,
-                skipLevelFilter: true);
+                skipLevelFilter: true,
+                openings: rebuilt.Openings,
+                useCustomOpenings: rebuilt.UseCustomOpenings);
+            rebuilt.BoundaryConditions = boundariesForLevel;
             rebuilt.AllPlates = all;
             rebuilt.AvailableLevels = levels;
 
@@ -816,7 +848,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ChkShowMesh.IsChecked == true,
                 ChkShowIso.IsChecked == true,
                 ChkShowAxes.IsChecked == true,
-                ChkShowPatches.IsChecked == true);
+                ChkShowPatchBoundaries.IsChecked == true);
         }
 
         private AnalysisSettings ReadSettingsFromUi()

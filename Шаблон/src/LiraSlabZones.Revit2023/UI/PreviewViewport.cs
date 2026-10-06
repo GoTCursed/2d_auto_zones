@@ -25,7 +25,7 @@ namespace LiraSlabZones.Revit2023.UI
         private AnalysisSettings _settings = new AnalysisSettings();
         private bool _showMesh = true;
         private bool _showIso;
-        private bool _showPatches;
+        private bool _showPatchBoundaries;
         private bool _showAxes;
         private DiagnosticFilter _diagnosticFilter = DiagnosticFilter.All;
 
@@ -215,7 +215,7 @@ namespace LiraSlabZones.Revit2023.UI
         }
 
         public void SetData(AnalysisResult? result, AnalysisSettings settings, bool showMesh, bool showIso,
-            bool showAxes = false, bool fitView = true, bool showPatches = false)
+            bool showAxes = false, bool fitView = true, bool showPatchBoundaries = false)
         {
             if (!ReferenceEquals(_result, result))
             {
@@ -228,7 +228,7 @@ namespace LiraSlabZones.Revit2023.UI
             _showMesh = showMesh;
             _showIso = showIso;
             _showAxes = showAxes;
-            _showPatches = showPatches;
+            _showPatchBoundaries = showPatchBoundaries;
             ComputeModelExtents();
             RebuildGeometryCache();
             if (result?.PatchPreviewOnly == true) ComputeModelExtents();
@@ -236,12 +236,13 @@ namespace LiraSlabZones.Revit2023.UI
             InvalidateVisual();
         }
 
-        public void RefreshDisplayFlags(bool showMesh, bool showIso, bool showAxes = false, bool showPatches = false)
+        public void RefreshDisplayFlags(bool showMesh, bool showIso, bool showAxes = false,
+            bool showPatchBoundaries = false)
         {
             _showMesh = showMesh;
             _showIso = showIso;
             _showAxes = showAxes;
-            _showPatches = showPatches;
+            _showPatchBoundaries = showPatchBoundaries;
             ComputeModelExtents();
             InvalidateVisual();
         }
@@ -302,9 +303,9 @@ namespace LiraSlabZones.Revit2023.UI
             if (Math.Abs(zoom - _zoom) < 1e-6) return;
 
             var anchor = anchorScreen ?? new Point(ActualWidth / 2, ActualHeight / 2);
-            var before = ScreenToModel(anchor);
+            var before = ScreenToTransformed(anchor);
             _zoom = zoom;
-            var after = ScreenToModel(anchor);
+            var after = ScreenToTransformed(anchor);
             _panX += (after.X - before.X) * _fitScale * _zoom;
             _panY -= (after.Y - before.Y) * _fitScale * _zoom;
             InvalidateVisual();
@@ -428,18 +429,15 @@ namespace LiraSlabZones.Revit2023.UI
 
             if (_result.PatchPreviewOnly)
             {
-                if (_showPatches)
+                foreach (var fill in _drawPatchFills)
                 {
-                    foreach (var fill in _drawPatchFills)
-                    {
-                        if (fill.Shape.Intersects(vMinX, vMaxX, vMinY, vMaxY))
-                            dc.DrawGeometry(PatchFill(fill.Level), null, fill.Shape.Geometry);
-                    }
+                    if (fill.Shape.Intersects(vMinX, vMaxX, vMinY, vMaxY))
+                        dc.DrawGeometry(PatchFill(fill.Level), null, fill.Shape.Geometry);
                 }
 
                 DrawPatchZoneOutlines(dc, s, vMinX, vMaxX, vMinY, vMaxY);
 
-                if (_showPatches)
+                if (_showPatchBoundaries)
                 {
                     foreach (var frame in _drawPatchFrames)
                     {
@@ -467,11 +465,12 @@ namespace LiraSlabZones.Revit2023.UI
                     }
                 }
 
-                if (_showPatches) DrawPatchElementValues(dc, s, vMinX, vMaxX, vMinY, vMaxY);
+                DrawPatchElementValues(dc, s, vMinX, vMaxX, vMinY, vMaxY);
                 DrawPatchZoneLabels(dc, s, vMinX, vMaxX, vMinY, vMaxY);
                 DrawAxes(dc, s, penW);
                 dc.Pop();
                 DrawElevationBadge(dc);
+                DrawDiameterLegend(dc);
                 DrawDirectionAxes(dc);
                 return;
             }

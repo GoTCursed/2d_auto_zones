@@ -90,12 +90,40 @@ namespace LiraSlabZones.Core
     /// <summary>Прямоугольное отверстие на плане (м). Перпендикулярный габарит для X-зон = HeightM, для Y = WidthM.</summary>
     public sealed class OpeningInfo
     {
+        public int OpeningId { get; set; }
         public double MinXM { get; set; }
         public double MaxXM { get; set; }
         public double MinYM { get; set; }
         public double MaxYM { get; set; }
+        /// <summary>КЭ, к геометрии которых привязано отверстие.</summary>
+        public List<int> ElementIds { get; set; } = new List<int>();
+        /// <summary>Якоря углов на вершины контура КЭ, в порядке min/min, max/min, max/max, min/max.</summary>
+        public List<MeshVertexAnchor> MeshAnchors { get; set; } = new List<MeshVertexAnchor>();
         public double WidthM => Math.Abs(MaxXM - MinXM);
         public double HeightM => Math.Abs(MaxYM - MinYM);
+    }
+
+    public sealed class MeshVertexAnchor
+    {
+        public int ElementId { get; set; }
+        public int VertexIndex { get; set; }
+        public Point3 Position { get; set; } = new Point3();
+    }
+
+    public sealed class MeshEdgeAnchor
+    {
+        public int ElementId { get; set; }
+        public int EdgeIndex { get; set; }
+        public Point3 Start { get; set; } = new Point3();
+        public Point3 End { get; set; } = new Point3();
+    }
+
+    /// <summary>Добавленная пользователем граница, собранная из рёбер конечных элементов.</summary>
+    public sealed class BoundaryConditionInfo
+    {
+        public int BoundaryId { get; set; }
+        public string Name { get; set; } = "Граница";
+        public List<MeshEdgeAnchor> Edges { get; set; } = new List<MeshEdgeAnchor>();
     }
 
     public sealed class AdditionalZone
@@ -213,6 +241,9 @@ namespace LiraSlabZones.Core
             set { if (value != null) AvailableLevels = value; }
         }
         public List<OpeningInfo> Openings { get; set; } = new List<OpeningInfo>();
+        /// <summary>Список отверстий вручную отредактирован; не заменять его автодетекцией при пересчёте.</summary>
+        public bool UseCustomOpenings { get; set; }
+        public List<BoundaryConditionInfo> BoundaryConditions { get; set; } = new List<BoundaryConditionInfo>();
 
         /// <summary>Средняя Z выбранного уровня, м.</summary>
         public double ElevationZM { get; set; }

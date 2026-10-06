@@ -69,6 +69,8 @@ namespace LiraSlabZones.Core
             string elevLabel = source.AvailableLevels
                 .FirstOrDefault(l => Math.Abs(l.ZM - elevZ) < 0.08)?.Label
                 ?? $"Z = {elevZ:F3} м";
+            var sameLevel = Math.Abs(source.ElevationZM - elevZ) < 0.08;
+            var preserveCustomOpenings = source.UseCustomOpenings && sameLevel;
 
             var result = BuildResult(
                 source.DocumentName,
@@ -80,7 +82,10 @@ namespace LiraSlabZones.Core
                 elevZ,
                 elevLabel,
                 skipLevelFilter: true,
-                openings: source.Openings);
+                openings: preserveCustomOpenings ? source.Openings : null,
+                useCustomOpenings: preserveCustomOpenings);
+            if (sameLevel)
+                result.BoundaryConditions = CloneBoundaryConditions(source.BoundaryConditions);
             result.AllPlates = all;
             result.AvailableLevels = source.AvailableLevels.Count > 0
                 ? source.AvailableLevels
@@ -110,7 +115,8 @@ namespace LiraSlabZones.Core
             double? elevationZM = null,
             string? elevationLabel = null,
             bool skipLevelFilter = false,
-            List<OpeningInfo>? openings = null)
+            List<OpeningInfo>? openings = null,
+            bool useCustomOpenings = false)
         {
             List<LiraPlateElement> levelPlates;
             double elev;
@@ -134,8 +140,10 @@ namespace LiraSlabZones.Core
 
             var geometry = SlabGeometryCache.Get(levelPlates);
             var outline = geometry.Outline;
-            var detectedOpenings = geometry.Openings;
-            if (openings != null)
+            var detectedOpenings = useCustomOpenings && openings != null
+                ? openings.Select(CloneOpening).ToList()
+                : geometry.Openings;
+            if (!useCustomOpenings && openings != null)
                 detectedOpenings.AddRange(openings.Where(op => !detectedOpenings.Any(existing =>
                     Math.Abs(existing.MinXM - op.MinXM) < 0.001 && Math.Abs(existing.MinYM - op.MinYM) < 0.001)));
 
@@ -157,6 +165,7 @@ namespace LiraSlabZones.Core
                     PatchPreviewOnly = true,
                     Axes = axes ?? new List<ConstructionAxis>(),
                     Openings = detectedOpenings,
+                    UseCustomOpenings = useCustomOpenings,
                     ElevationZM = elev,
                     ElevationLabel = elevationLabel ?? $"Z = {elev:F3} м",
                     Stats = ComputeStats(new List<AdditionalZone>(), settings, outline, levelPlates),
@@ -276,6 +285,7 @@ namespace LiraSlabZones.Core
                 Zones = zones,
                 Axes = axes ?? new List<ConstructionAxis>(),
                 Openings = detectedOpenings,
+                UseCustomOpenings = useCustomOpenings,
                 ElevationZM = elev,
                 ElevationLabel = elevationLabel ?? $"Z = {elev:F3} м",
                 Stats = stats,
@@ -316,6 +326,41 @@ namespace LiraSlabZones.Core
         public static List<Point3> BuildOutline(IList<LiraPlateElement> plates) =>
             MeshBoundary.BuildOuterContour(plates);
 
+        private static OpeningInfo CloneOpening(OpeningInfo opening) => new OpeningInfo
+        {
+            OpeningId = opening.OpeningId,
+            MinXM = opening.MinXM,
+            MaxXM = opening.MaxXM,
+            MinYM = opening.MinYM,
+            MaxYM = opening.MaxYM,
+            ElementIds = opening.ElementIds?.Distinct().ToList() ?? new List<int>(),
+            MeshAnchors = opening.MeshAnchors?.Select(anchor => new MeshVertexAnchor
+            {
+                ElementId = anchor.ElementId,
+                VertexIndex = anchor.VertexIndex,
+                Position = anchor.Position == null
+                    ? new Point3()
+                    : new Point3(anchor.Position.X, anchor.Position.Y, anchor.Position.Z)
+            }).ToList() ?? new List<MeshVertexAnchor>()
+        };
+
+        private static List<BoundaryConditionInfo> CloneBoundaryConditions(
+            IEnumerable<BoundaryConditionInfo>? boundaries) => boundaries?.Select(boundary =>
+                new BoundaryConditionInfo
+                {
+                    BoundaryId = boundary.BoundaryId,
+                    Name = boundary.Name,
+                    Edges = boundary.Edges?.Select(edge => new MeshEdgeAnchor
+                    {
+                        ElementId = edge.ElementId,
+                        EdgeIndex = edge.EdgeIndex,
+                        Start = edge.Start == null ? new Point3() :
+                            new Point3(edge.Start.X, edge.Start.Y, edge.Start.Z),
+                        End = edge.End == null ? new Point3() :
+                            new Point3(edge.End.X, edge.End.Y, edge.End.Z)
+                    }).ToList() ?? new List<MeshEdgeAnchor>()
+                }).ToList() ?? new List<BoundaryConditionInfo>();
+
         public static AnalysisResult RebuildLayers(
             AnalysisResult source, AnalysisSettings settings, IEnumerable<RebarLayer> changedLayers)
         {
@@ -330,7 +375,8 @@ namespace LiraSlabZones.Core
 
             var rebuilt = BuildResult(source.DocumentName, source.DocumentPath, source.NodeCount,
                 source.Plates, localSettings, source.Axes, source.ElevationZM, source.ElevationLabel,
-                skipLevelFilter: true, openings: source.Openings);
+                skipLevelFilter: true, openings: source.Openings,
+                useCustomOpenings: source.UseCustomOpenings);
             if (source.PatchPreviewOnly)
             {
                 rebuilt.Patches = source.Patches.Where(patch => !changed.Contains(patch.Layer))
@@ -351,6 +397,7 @@ namespace LiraSlabZones.Core
             }
             rebuilt.Settings = settings;
             rebuilt.AllPlates = source.AllPlates;
+            rebuilt.BoundaryConditions = CloneBoundaryConditions(source.BoundaryConditions);
             rebuilt.AvailableLevels = source.AvailableLevels;
             rebuilt.UnitsNote = source.UnitsNote;
             return rebuilt;

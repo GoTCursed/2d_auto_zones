@@ -1190,7 +1190,7 @@ namespace LiraSlabZones.Core
                     ? zone.Direction == ZoneDirection.X ? bounds.MaxY : bounds.MaxX
                     : perpendicularValues.Max();
                 var minimumCoverWidthMm = UnitConversion.MetersToMm(coreMax - coreMin);
-                var minimumConfiguredWidthMm = Math.Max(0, settings.MinZoneWidthM * 1000.0);
+                var minimumConfiguredWidthMm = settings.EffectiveMinZoneWidthM * 1000.0;
                 var modules = Math.Max(1, (int)Math.Ceiling(
                     (Math.Max(minimumConfiguredWidthMm, minimumCoverWidthMm) - 1e-6) / zone.BarStepMm));
                 var targetWidthM = UnitConversion.MmToMeters(modules * zone.BarStepMm);

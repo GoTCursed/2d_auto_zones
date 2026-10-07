@@ -66,7 +66,7 @@ namespace LiraSlabZones.Core
 
                 var direction = RebarTables.DirectionForLayer(layerGroup.Key, settings.ReverseZoneDirections);
                 var zoneBounds = ExpandWidthToMinimum(
-                    layerBounds, direction, settings.MinZoneWidthM);
+                    layerBounds, direction, settings.EffectiveMinZoneWidthM);
                 var widthM = direction == ZoneDirection.X
                     ? zoneBounds.MaxY - zoneBounds.MinY
                     : zoneBounds.MaxX - zoneBounds.MinX;
@@ -514,7 +514,13 @@ namespace LiraSlabZones.Core
         {
             var maxDiameter = settings.MaxDiameterMm > 0 ? settings.MaxDiameterMm : 36;
             var excluded = settings.ExcludedZoneDiametersMm?.ToArray();
-            var options = new[] { 200, 100 }
+            var steps = (settings.AllowedAdditionalBarStepsMm ?? new List<int> { 100, 200 })
+                .Where(step => step == 100 || step == 200)
+                .Distinct()
+                .OrderByDescending(step => step)
+                .ToArray();
+            if (steps.Length == 0) steps = new[] { 200 };
+            var options = steps
                 .Select(step =>
                 {
                     var diameter = BarCapacity.MinDiameterForAs(

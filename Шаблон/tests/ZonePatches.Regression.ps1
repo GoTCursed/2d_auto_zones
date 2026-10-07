@@ -65,6 +65,43 @@ function New-TestZone([double]$minX, [double]$maxX, [double]$minY, [double]$maxY
     return $zone
 }
 
+function Invoke-NeighborConflictPair($first, $second, [int]$gridCellMm = 400,
+    [object]$firstPatch = $null, [object]$secondPatch = $null) {
+    $zones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+    $support = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+    $patches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+    $zones.Add($first)
+    $zones.Add($second)
+    $support.Add($first, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 1))
+    $support.Add($second, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 1, 2))
+    if ($null -eq $firstPatch) {
+        $firstPatch = [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 1)
+    }
+    if ($null -eq $secondPatch) {
+        $secondPatch = [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 1, 2)
+    }
+    $patches.Add($first, $firstPatch)
+    $patches.Add($second, $secondPatch)
+    $settings = [LiraSlabZones.Core.AnalysisSettings]::new()
+    $settings.ShowAs1 = $true
+    $settings.ShowAs2 = $false
+    $settings.ShowAs3 = $false
+    $settings.ShowAs4 = $false
+    $settings.GridCellMm = $gridCellMm
+    $result = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
+        $zones, $support, $patches,
+        [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new(),
+        $settings, $null, $null)
+    $firstCross = @($first.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum -Maximum)
+    $secondCross = @($second.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum -Maximum)
+    return [pscustomobject]@{
+        Result = $result
+        FirstWidthMm = $first.WidthMm
+        SecondWidthMm = $second.WidthMm
+        GapM = $secondCross[0].Minimum - $firstCross[0].Maximum
+    }
+}
+
 $plates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
 $plates.Add((New-QuadPlate 10 0 1 0 1 5))
 $plates.Add((New-QuadPlate 11 1 2 0 1 5))
@@ -732,6 +769,7 @@ $neighborSettings.ShowAs2 = $false
 $neighborSettings.ShowAs3 = $false
 $neighborSettings.ShowAs4 = $false
 $neighborSettings.AsMainAs1 = 0
+$neighborSettings.GridCellMm = 400
 $neighborZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $neighborSupport = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
 $neighborPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
@@ -762,8 +800,9 @@ Assert ($neighborResult.RolledBackForCoverage -eq $false -and
         [Math]::Abs($normalizedB.WidthMm - [Math]::Round($normalizedB.WidthMm / 200) * 200) -lt 0.001 -and
         [Math]::Abs($normalizedA.WidthMm - 1000) -lt 0.001 -and
         [Math]::Abs($normalizedB.WidthMm - 1000) -lt 0.001 -and
-        [Math]::Abs($normalizedAInterval[0].Maximum - $normalizedBInterval[0].Minimum) -lt 0.001 -and
-        $normalizedAInterval[0].Minimum -ge -0.410001) `
+        [Math]::Abs($normalizedBInterval[0].Minimum - $normalizedAInterval[0].Maximum - 0.2) -lt 0.001 -and
+        $normalizedAInterval[0].Minimum -ge -0.400001 -and
+        $normalizedBInterval[0].Maximum -le 2.040001) `
     "Neighbor normalization failed. Result=$($neighborResult | ConvertTo-Json -Compress); A=$($normalizedA.WidthMm)mm [$($normalizedAInterval[0].Minimum),$($normalizedAInterval[0].Maximum)]; B=$($normalizedB.WidthMm)mm [$($normalizedBInterval[0].Minimum),$($normalizedBInterval[0].Maximum)]"
 $longitudinalZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $longitudinalSupport = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
@@ -794,7 +833,7 @@ $gapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $gapSupport = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
 $gapPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
 $gapA = New-TestZone 0 2 0 1 ([LiraSlabZones.Core.ZoneDirection]::X) 16 200
-$gapB = New-TestZone 0 2 1.1 2.1 ([LiraSlabZones.Core.ZoneDirection]::X) 12 100
+$gapB = New-TestZone 0 2 1.05 2.05 ([LiraSlabZones.Core.ZoneDirection]::X) 12 100
 $gapZones.Add($gapA)
 $gapZones.Add($gapB)
 $gapSupport.Add($gapA, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 2, 0, 1))
@@ -808,7 +847,57 @@ $gapResult = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
 Assert ($gapResult.UnresolvedPairs -eq 0 -and
         [Math]::Abs((($gapB.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum) -
                     (($gapA.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum) - 0.1) -lt 0.001) `
-    'A gap equal to the smaller neighboring step remains acceptable.'
+    'A neighboring 100/200 mm pair must be corrected to exactly the smaller 100 mm step.'
+$stepConflictFirst = New-TestZone 0 4 -0.2 1.2 ([LiraSlabZones.Core.ZoneDirection]::X) 25 100
+$stepConflictSecond = New-TestZone 0 4 0.8 2.2 ([LiraSlabZones.Core.ZoneDirection]::X) 12 200
+$stepConflictFirst.LengthMm = 2340
+$stepConflictSecond.LengthMm = 3900
+$stepConflict = Invoke-NeighborConflictPair $stepConflictFirst $stepConflictSecond 200 `
+    ([LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, -0.2, 1.2)) `
+    ([LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0.8, 2.2))
+Assert ($stepConflict.Result.ShrunkConflictZones -eq 1 -and
+        $stepConflict.Result.UnresolvedPairs -eq 0 -and
+        [Math]::Abs($stepConflict.FirstWidthMm - 1300) -lt 0.001 -and
+        [Math]::Abs($stepConflict.SecondWidthMm - 1400) -lt 0.001 -and
+        [Math]::Abs($stepConflict.GapM - 0.1) -lt 0.001) `
+    'An unresolved 100/200 mm pair must shrink the smaller-step lane by one of its own steps.'
+$lengthConflictFirst = New-TestZone 0 4 -0.3 1.3 ([LiraSlabZones.Core.ZoneDirection]::X) 22 200
+$lengthConflictSecond = New-TestZone 0 4 0.7 2.3 ([LiraSlabZones.Core.ZoneDirection]::X) 22 200
+$lengthConflictFirst.LengthMm = 2900
+$lengthConflictSecond.LengthMm = 3900
+$lengthConflict = Invoke-NeighborConflictPair $lengthConflictFirst $lengthConflictSecond 400 `
+    ([LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, -0.3, 1.3)) `
+    ([LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0.5, 2.1))
+Assert ($lengthConflict.Result.ShrunkConflictZones -eq 1 -and
+        $lengthConflict.Result.UnresolvedPairs -eq 0 -and
+        [Math]::Abs($lengthConflict.FirstWidthMm - 1400) -lt 0.001 -and
+        [Math]::Abs($lengthConflict.SecondWidthMm - 1600) -lt 0.001 -and
+        [Math]::Abs($lengthConflict.GapM - 0.2) -lt 0.001) `
+    'For equal-diameter/equal-step zones, shrink the zone with the shorter reference length.'
+$areaConflictFirst = New-TestZone 0 4 -0.3 1.3 ([LiraSlabZones.Core.ZoneDirection]::X) 16 200
+$areaConflictSecond = New-TestZone 0 4 0.7 2.3 ([LiraSlabZones.Core.ZoneDirection]::X) 25 200
+$areaConflictFirst.LengthMm = 3900
+$areaConflictSecond.LengthMm = 3900
+$areaConflict = Invoke-NeighborConflictPair $areaConflictFirst $areaConflictSecond 300 `
+    ([LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, -0.3, 1.3)) `
+    ([LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0.7, 2.3))
+Assert ($areaConflict.Result.ShrunkConflictZones -eq 1 -and
+        $areaConflict.Result.UnresolvedPairs -eq 0 -and
+        [Math]::Abs($areaConflict.FirstWidthMm - 1400) -lt 0.001 -and
+        [Math]::Abs($areaConflict.SecondWidthMm - 1600) -lt 0.001 -and
+        [Math]::Abs($areaConflict.GapM - 0.2) -lt 0.001) `
+    'When adjacent zones have different calculated area, the lower-area lane may shrink one step.'
+$overrunConflictFirst = New-TestZone 0 4 -0.3 1.3 ([LiraSlabZones.Core.ZoneDirection]::X) 22 200
+$overrunConflictSecond = New-TestZone 0 4 0.7 2.3 ([LiraSlabZones.Core.ZoneDirection]::X) 22 200
+$overrunConflictFirst.LengthMm = 3900
+$overrunConflictSecond.LengthMm = 3900
+$overrunConflict = Invoke-NeighborConflictPair $overrunConflictFirst $overrunConflictSecond 600
+Assert ($overrunConflict.Result.ShrunkConflictZones -eq 1 -and
+        $overrunConflict.Result.UnresolvedPairs -eq 0 -and
+        [Math]::Abs($overrunConflict.FirstWidthMm - 1400) -lt 0.001 -and
+        [Math]::Abs($overrunConflict.SecondWidthMm - 1600) -lt 0.001 -and
+        [Math]::Abs($overrunConflict.GapM - 0.2) -lt 0.001) `
+    'When a zone overruns its patch by more than one step, it may shrink by one step to resolve a pair conflict.'
 $weakZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $weakSupport = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
 $weakPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
@@ -835,12 +924,39 @@ $weakPlates.Add((New-QuadPlate 913 0 2 1.6 2.1 40))
 $weakPlates.Add((New-QuadPlate 915 2 4 2.1 2.6 40))
 $weakResult = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
     $weakZones, $weakSupport, $weakPatches, $weakPlates, $neighborSettings, $null, $null)
-Assert ($weakResult.ShrunkWeakZones -eq 1 -and
+Assert ($weakResult.ShrunkWeakZones -gt 0 -and
         [Math]::Abs($strongLeft.WidthMm - 1000) -lt 0.001 -and
         [Math]::Abs($strongRight.WidthMm - 1000) -lt 0.001 -and
-        [Math]::Abs($weakMiddle.WidthMm - 600) -lt 0.001 -and
+        [Math]::Abs($weakMiddle.WidthMm - 400) -lt 0.001 -and
+        [Math]::Abs((($weakMiddle.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum) -
+                    (($strongLeft.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum) - 0.1) -lt 0.001 -and
+        [Math]::Abs((($strongRight.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum) -
+                    (($weakMiddle.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum) - 0.1) -lt 0.001 -and
+        (($weakMiddle.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum) -ge -0.000001 -and
+        (($weakMiddle.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum) -le 2.600001 -and
         $weakResult.RolledBackForCoverage -eq $false) `
-    "Only a zone with lower As capacity than both cross-width neighbors may shrink, and it must retain covered FE values. Result=$($weakResult | ConvertTo-Json -Compress); widths=$($strongLeft.WidthMm)/$($weakMiddle.WidthMm)/$($strongRight.WidthMm); middle=$($weakMiddle.Contour[0].Y)..$($weakMiddle.Contour[2].Y)"
+    "Only a zone with lower As capacity than both cross-width neighbors may shrink by the space left after both required gaps, and it must retain covered FE values. Result=$($weakResult | ConvertTo-Json -Compress); widths=$($strongLeft.WidthMm)/$($weakMiddle.WidthMm)/$($strongRight.WidthMm); middle=$($weakMiddle.Contour[0].Y)..$($weakMiddle.Contour[2].Y)"
+$protectedZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$protectedSupport = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$protectedPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$protectedLeft = New-TestZone 0 4 0 1 ([LiraSlabZones.Core.ZoneDirection]::X) 25 100
+$protectedMiddle = New-TestZone 0 4 1 2 ([LiraSlabZones.Core.ZoneDirection]::X) 12 200
+$protectedRight = New-TestZone 0 4 2 3 ([LiraSlabZones.Core.ZoneDirection]::X) 12 200
+foreach ($zone in @($protectedLeft, $protectedMiddle, $protectedRight)) {
+    $protectedZones.Add($zone)
+    $minY = ($zone.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum
+    $maxY = ($zone.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum
+    $bounds = [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, $minY, $maxY)
+    $protectedSupport.Add($zone, $bounds)
+    $protectedPatches.Add($zone, $bounds)
+}
+$protectedResult = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
+    $protectedZones, $protectedSupport, $protectedPatches,
+    [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new(),
+    $neighborSettings, $null, $null)
+Assert ($protectedResult.ShrunkWeakZones -eq 0 -and
+        [Math]::Abs($protectedMiddle.WidthMm - 1000) -lt 0.001) `
+    'A zone must not shrink when its calculated area is not lower than both neighbors.'
 $bridgeLeft = New-TestZone 0 2 0 0.8 ([LiraSlabZones.Core.ZoneDirection]::X) 22 100
 $bridgeRight = New-TestZone 0 2 0.9 1.7 ([LiraSlabZones.Core.ZoneDirection]::X) 12 200
 $bridgeElement = New-QuadPlate 920 0.2 1.8 0.8 0.9 5
@@ -916,6 +1032,21 @@ $lowerConsumptionZones = [LiraSlabZones.Core.ZonePatchZoneBuilder]::Build($frame
 Assert ($lowerConsumptionZones[0].DiameterMm -eq 16 -and $lowerConsumptionZones[0].BarStepMm -eq 200 -and
         $lowerConsumptionZones[0].AsCoveredCm2PerM -lt [LiraSlabZones.Core.BarCapacity]::AsCm2PerM(12, 100)) `
     'When a slightly larger bar at 200 mm provides enough As with lower consumption, it must be selected.'
+$settings.AllowedAdditionalBarStepsMm.Clear()
+$settings.AllowedAdditionalBarStepsMm.Add(100)
+$only100Zones = [LiraSlabZones.Core.ZonePatchZoneBuilder]::Build($frameSelection, 4.5, $settings)
+Assert ($only100Zones.Count -eq 1 -and $only100Zones[0].BarStepMm -eq 100) `
+    'The patch builder must use 100 mm when it is the only allowed additional reinforcement step.'
+$settings.AllowedAdditionalBarStepsMm.Clear()
+$settings.AllowedAdditionalBarStepsMm.Add(200)
+$only200Zones = [LiraSlabZones.Core.ZonePatchZoneBuilder]::Build($frameSelection, 4.5, $settings)
+Assert ($only200Zones.Count -eq 1 -and $only200Zones[0].BarStepMm -eq 200) `
+    'The patch builder must use 200 mm when it is the only allowed additional reinforcement step.'
+$settings.AllowedAdditionalBarStepsMm.Clear()
+$settings.AllowedAdditionalBarStepsMm.AddRange([int[]]@(100, 200))
+$stepDefaults = [LiraSlabZones.Core.AnalysisSettings]::new().AllowedAdditionalBarStepsMm
+Assert ($stepDefaults.Count -eq 2 -and $stepDefaults.Contains(100) -and $stepDefaults.Contains(200)) `
+    'Both 100 mm and 200 mm must be allowed by default for additional reinforcement.'
 $insideCell.AsAdditionalCm2PerM = 15
 $longPatch = New-FramePatch 703 ([LiraSlabZones.Core.ZoneDirection]::X) 0 20 0 0.8
 $longPatch.Layer = [LiraSlabZones.Core.RebarLayer]::As1
@@ -1851,5 +1982,101 @@ $settings.SyncBackgroundAsFromBars()
 $settings.ConcreteClass = ''
 $noConcreteZones = [LiraSlabZones.Core.ZonePatchZoneBuilder]::Build($frameSelection, 4.5, $settings)
 Assert ($noConcreteZones.Count -eq 0) 'A zone must not be generated when the concrete class is not selected.'
+
+$minimumWidthSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$minimumWidthSettings.MinZoneWidthM = 0
+$minimumWidthSettings.GridCellMm = 600
+Assert ([Math]::Abs($minimumWidthSettings.EffectiveMinZoneWidthM - 0.6) -lt 1e-9) `
+    'The effective minimum zone width must never be below the mosaic cell size.'
+
+$nestedSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$nestedSettings.ShowAs1 = $true
+$nestedSettings.ShowAs2 = $false
+$nestedSettings.ShowAs3 = $false
+$nestedSettings.ShowAs4 = $false
+$nestedSettings.ConcreteClass = 'B25'
+$nestedSettings.GridCellMm = 400
+$nestedSettings.MinZoneWidthM = 0.4
+$nestedSettings.BgBottomDiameterMm = 8
+$nestedSettings.AllowedAdditionalBarStepsMm.Clear()
+$nestedSettings.AllowedAdditionalBarStepsMm.Add(100)
+$nestedSettings.AllowedAdditionalBarStepsMm.Add(200)
+
+$containedZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$containedOuter = New-TestZone 0 4 0 2 ([LiraSlabZones.Core.ZoneDirection]::X) 25 200
+$containedInner = New-TestZone 1 3 0.6 1.4 ([LiraSlabZones.Core.ZoneDirection]::X) 20 200
+$containedOuter.AsAdditional = 5
+$containedOuter.AsRequired = 5
+$containedInner.AsAdditional = 15
+$containedInner.AsRequired = 15
+$containedInner.NodeIds.Add(1501)
+$containedZones.Add($containedOuter)
+$containedZones.Add($containedInner)
+$containedSupports = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$containedPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$containedSupports.Add($containedOuter, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 2))
+$containedSupports.Add($containedInner, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(1, 3, 0.6, 1.4))
+$containedPatches.Add($containedOuter, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 2))
+$containedPatches.Add($containedInner, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(1, 3, 0.6, 1.4))
+$containedPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$containedPlates.Add((New-QuadPlate 1501 1.2 1.8 0.8 1.2 15))
+$containedResult = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
+    $containedZones, $containedSupports, $containedPatches, $containedPlates,
+    $nestedSettings, $null, $null)
+Assert ($containedResult.AbsorbedContainedZones -eq 1 -and $containedZones.Count -eq 1 -and
+        $containedZones[0].AsCoveredCm2PerM -ge 15 -and
+        [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+            $containedZones, $containedPlates[0], [LiraSlabZones.Core.RebarLayer]::As1, 15)) `
+    'A contained zone may be absorbed by a stronger outer zone only while retaining FE coverage.'
+
+$splitZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$splitOuter = New-TestZone 0 4 0 3 ([LiraSlabZones.Core.ZoneDirection]::X) 16 200
+$splitInner = New-TestZone 0 4 1 2 ([LiraSlabZones.Core.ZoneDirection]::X) 25 100
+$splitOuter.AsAdditional = 8
+$splitOuter.AsRequired = 8
+$splitInner.AsAdditional = 15
+$splitInner.AsRequired = 15
+$splitZones.Add($splitOuter)
+$splitZones.Add($splitInner)
+$splitSupports = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$splitPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$splitSupports.Add($splitOuter, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 3))
+$splitSupports.Add($splitInner, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 1, 2))
+$splitPatches.Add($splitOuter, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 3))
+$splitPatches.Add($splitInner, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 1, 2))
+$splitPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$splitPlates.Add((New-QuadPlate 1511 0.1 3.9 0.15 0.65 8))
+$splitPlates.Add((New-QuadPlate 1512 0.1 3.9 1.2 1.8 15))
+$splitResult = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
+    $splitZones, $splitSupports, $splitPatches, $splitPlates,
+    $nestedSettings, $null, $null)
+$splitWidthsValid = @($splitZones | Where-Object {
+    $_.BarStepMm -le 0 -or
+    [Math]::Abs($_.WidthMm / $_.BarStepMm - [Math]::Round($_.WidthMm / $_.BarStepMm)) -gt 1e-6 -or
+    [Math]::Abs($_.LengthMm - 4000) -gt 1e-6 -or $_.LengthMm -gt 11700
+}).Count -eq 0
+$splitCoverageValid = @($splitPlates | Where-Object {
+    -not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+        $splitZones, $_, [LiraSlabZones.Core.RebarLayer]::As1, $_.Rebar.As1)
+}).Count -eq 0
+$splitIntersections = 0
+for ($i = 0; $i -lt $splitZones.Count; $i++) {
+    for ($j = $i + 1; $j -lt $splitZones.Count; $j++) {
+        $a = $splitZones[$i].Contour
+        $b = $splitZones[$j].Contour
+        $overlapX = [Math]::Min(($a | ForEach-Object X | Measure-Object -Maximum).Maximum,
+                                ($b | ForEach-Object X | Measure-Object -Maximum).Maximum) -
+                    [Math]::Max(($a | ForEach-Object X | Measure-Object -Minimum).Minimum,
+                                ($b | ForEach-Object X | Measure-Object -Minimum).Minimum)
+        $overlapY = [Math]::Min(($a | ForEach-Object Y | Measure-Object -Maximum).Maximum,
+                                ($b | ForEach-Object Y | Measure-Object -Maximum).Maximum) -
+                    [Math]::Max(($a | ForEach-Object Y | Measure-Object -Minimum).Minimum,
+                                ($b | ForEach-Object Y | Measure-Object -Minimum).Minimum)
+        if ($overlapX -gt 1e-5 -and $overlapY -gt 1e-5) { $splitIntersections++ }
+    }
+}
+Assert ($splitResult.SplitContainedZones -eq 1 -and $splitZones.Count -eq 3 -and
+        $splitWidthsValid -and $splitCoverageValid -and $splitIntersections -eq 0) `
+    "A weaker containing zone must split around a stronger contained zone when axial lengths match, preserving step widths, coverage and the 11700 mm limit. Result=$($splitResult | ConvertTo-Json -Compress); zones=$($splitZones.Count); split=$splitWidthsValid coverage=$splitCoverageValid intersections=$splitIntersections"
 
 Write-Host 'PASS patches and frame zones: detail/reverse rules, bar sizing, unclipped edits, and compatible zone merging'

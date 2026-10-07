@@ -145,7 +145,7 @@ foreach ($frame in $frames) {
     }
     $partitions = [LiraSlabZones.Core.ZonePatchFramePartitioner]::Split(
         $frame.Patches, $frame.MinX, $frame.MaxX, $frame.MinY, $frame.MaxY,
-        [Math]::Max(0.1, $settings.MinZoneWidthM), $frameElements)
+        $settings.EffectiveMinZoneWidthM, $frameElements)
     foreach ($partition in $partitions) {
         $selection = [LiraSlabZones.Core.ZonePatchFrameSelection]::new()
         $selection.Patches = $frame.Patches
@@ -165,15 +165,13 @@ foreach ($frame in $frames) {
 
 if (-not $SkipCompatibleMerges) {
     [void][LiraSlabZones.Core.ZonePatchZoneBuilder]::MergeAdjacentCompatibleZones($zones)
-}
-$coverageBefore = Get-CoverageCounts $zones $result.Plates $settings $result.Outline $result.Openings
-$layout = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
-    $zones, $sourceBounds, $outerBounds, $result.Plates, $settings, $result.Outline, $result.Openings)
-if (-not $SkipCompatibleMerges) {
     [void][LiraSlabZones.Core.ZonePatchZoneBuilder]::MergeShiftableAdjacentZonesAlongBars(
         $zones, $sourceBounds, $settings)
     [void][LiraSlabZones.Core.ZonePatchZoneBuilder]::MergeAdjacentCompatibleZones($zones)
 }
+$coverageBefore = Get-CoverageCounts $zones $result.Plates $settings $result.Outline $result.Openings
+$layout = [LiraSlabZones.Core.ZonePatchNeighborLayout]::Apply(
+    $zones, $sourceBounds, $outerBounds, $result.Plates, $settings, $result.Outline, $result.Openings)
 $coverageAfter = Get-CoverageCounts $zones $result.Plates $settings $result.Outline $result.Openings
 
 $nonMultipleWidths = @($zones | Where-Object {
@@ -181,7 +179,7 @@ $nonMultipleWidths = @($zones | Where-Object {
 })
 $longBars = @($zones | Where-Object { $_.LengthMm -gt 11700.01 })
 $crossOverlaps = 0
-$excessiveGaps = 0
+$spacingConflicts = 0
 $overlapExamples = [Collections.Generic.List[string]]::new()
 foreach ($i in 0..([Math]::Max(0, $zones.Count - 1))) {
     if ($i -ge $zones.Count) { continue }
@@ -214,7 +212,19 @@ foreach ($i in 0..([Math]::Max(0, $zones.Count - 1))) {
                     $aAxial.Min, $aAxial.Max, $bAxial.Min, $bAxial.Max))
             }
         }
-        elseif ($gap -gt [Math]::Min($a.BarStepMm, $b.BarStepMm) / 1000.0 + 1e-6) { $excessiveGaps++ }
+        elseif ($sourceBounds.ContainsKey($a) -and $sourceBounds.ContainsKey($b)) {
+            $aSupport = Get-CrossBounds @(
+                [LiraSlabZones.Core.Point3]::new($sourceBounds[$a].MinX, $sourceBounds[$a].MinY, 0),
+                [LiraSlabZones.Core.Point3]::new($sourceBounds[$a].MaxX, $sourceBounds[$a].MaxY, 0)) $a.Direction
+            $bSupport = Get-CrossBounds @(
+                [LiraSlabZones.Core.Point3]::new($sourceBounds[$b].MinX, $sourceBounds[$b].MinY, 0),
+                [LiraSlabZones.Core.Point3]::new($sourceBounds[$b].MaxX, $sourceBounds[$b].MaxY, 0)) $b.Direction
+            $supportGap = [Math]::Max(0, [Math]::Max($aSupport.Min, $bSupport.Min) -
+                [Math]::Min($aSupport.Max, $bSupport.Max))
+            $requiredGap = [Math]::Min($a.BarStepMm, $b.BarStepMm) / 1000.0
+            if ($supportGap -le $requiredGap + 1e-6 -and
+                [Math]::Abs($gap - $requiredGap) -gt 1e-5) { $spacingConflicts++ }
+        }
     }
 }
 
@@ -230,19 +240,20 @@ $report = [pscustomobject]@{
     NormalizedWidths = $layout.NormalizedWidths
     ShiftedZones = $layout.ShiftedZones
     ShrunkWeakZones = $layout.ShrunkWeakZones
+    ShrunkConflictZones = $layout.ShrunkConflictZones
     TrimmedOverhangZones = $layout.TrimmedOverhangZones
     TransferredCoverageElements = $layout.TransferredCoverageElements
     ExtendedZones = $layout.ExtendedZones
     UnresolvedWidths = $layout.UnresolvedWidths
     UnresolvedPairs = $layout.UnresolvedPairs
     ResidualIntersections = $layout.ResidualIntersections
-    ResidualExcessiveGaps = $layout.ResidualExcessiveGaps
+    ResidualSpacingConflicts = $layout.ResidualSpacingConflicts
     RolledBackForCoverage = $layout.RolledBackForCoverage
     CoverageBefore = $coverageBefore
     CoverageAfter = $coverageAfter
     WidthsNotMultiple = $nonMultipleWidths.Count
     CrossWidthOverlaps = $crossOverlaps
-    GapsOverSmallerStep = $excessiveGaps
+    ExactSpacingViolations = $spacingConflicts
     BarsOver11700 = $longBars.Count
     Warning = $layout.Warning
 }

@@ -122,6 +122,7 @@ namespace LiraSlabZones.Core
                 ConcreteClass = "B25",
                 AutoLayout = true,
                 GridCellMm = 300,
+                MinZoneWidthM = 0.3,
                 BarStepMm = 200,
                 PlacementMode = "AutoLayout"
             };

@@ -228,6 +228,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ? Viewport.EditableZoneCount > 0 || result.Patches.Count > 0
                 : result.Zones.Count > 0);
             BtnPlace.IsEnabled = _placeCallback != null && editable && !patchMode;
+            BtnBoundaryEditor.IsEnabled = result?.Plates?.Count > 0;
             BtnSaveJson.Content = result?.PatchPreviewOnly == true
                 ? "Сохранить JSON пятен…"
                 : "Сохранить JSON зон…";
@@ -246,7 +247,7 @@ namespace LiraSlabZones.Revit2023.UI
             BtnEditDelete.IsEnabled = editable;
             CmbDiagnostics.IsEnabled = result?.PatchPreviewOnly != true;
             ChkShowIso.Visibility = result?.PatchPreviewOnly == true ? Visibility.Collapsed : Visibility.Visible;
-            ChkShowPatches.Visibility = patchMode ? Visibility.Visible : Visibility.Collapsed;
+            ChkShowPatchBoundaries.Visibility = patchMode ? Visibility.Visible : Visibility.Collapsed;
         }
 
         /// <summary>Имя прямой зоны из ComboBox (из проекта или вручную).</summary>
@@ -372,7 +373,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ChkShowIso.IsChecked == true,
                 ChkShowAxes.IsChecked == true,
                 fitView: fitView,
-                showPatches: ChkShowPatches.IsChecked == true);
+                showPatchBoundaries: ChkShowPatchBoundaries.IsChecked == true);
             TxtZoom.Text = $"{Viewport.Zoom * 100:0}%";
         }
 
@@ -437,6 +438,29 @@ namespace LiraSlabZones.Revit2023.UI
         private void BtnRebuild_Click(object sender, RoutedEventArgs e) =>
             RebuildZonesPreservingView(fromUi: true);
 
+        private void BtnBoundaryEditor_Click(object sender, RoutedEventArgs e)
+        {
+            if (_result == null || _result.Plates.Count == 0) return;
+            try
+            {
+                var editor = new BoundaryEditorWindow(_result) { Owner = this };
+                if (editor.ShowDialog() != true) return;
+
+                _result.Openings = editor.EditedOpenings;
+                _result.BoundaryConditions = editor.EditedBoundaries;
+                _result.UseCustomOpenings = true;
+                RebuildZonesPreservingView(fromUi: false);
+                Log($"Геометрия обновлена: отверстий {_result.Openings.Count}, границ {_result.BoundaryConditions.Count}", "ok");
+            }
+            catch (Exception ex)
+            {
+                Log($"Ошибка редактора границ и отверстий: {ex}", "error");
+                MessageBox.Show(this,
+                    $"Не удалось открыть или применить редактор границ и отверстий.\n{ex.Message}",
+                    "Ошибка редактора", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private static bool TryGetLayerOnlyChanges(
             AnalysisSettings? oldSettings, AnalysisSettings newSettings,
             out HashSet<RebarLayer> changed)
@@ -485,6 +509,8 @@ namespace LiraSlabZones.Revit2023.UI
             var levels = _result.AvailableLevels;
             var axes = _result.Axes;
             var openings = _result.Openings;
+            var useCustomOpenings = _result.UseCustomOpenings;
+            var boundaries = _result.BoundaryConditions;
             var units = _result.UnitsNote;
 
             AnalysisResult rebuilt;
@@ -504,11 +530,13 @@ namespace LiraSlabZones.Revit2023.UI
                     _result.ElevationZM,
                     _result.ElevationLabel,
                     skipLevelFilter: true,
-                    openings: openings);
+                    openings: openings,
+                    useCustomOpenings: useCustomOpenings);
                 rebuilt.AllPlates = all;
                 rebuilt.AvailableLevels = levels;
             }
 
+            rebuilt.BoundaryConditions = boundaries;
             rebuilt.UnitsNote = units;
             rebuilt.Settings = settings;
             _result = rebuilt;
@@ -614,6 +642,7 @@ namespace LiraSlabZones.Revit2023.UI
             var levels = _result.AvailableLevels;
 
             var rebuilt = SlabZoneAnalyzer.RebuildForElevation(_result, level.ZM, settings);
+            var boundariesForLevel = rebuilt.BoundaryConditions;
             // перенести As с AllPlates (уже прочитаны при анализе)
             var byId = new Dictionary<int, PlateReinforcement>();
             foreach (var p in all)
@@ -630,7 +659,10 @@ namespace LiraSlabZones.Revit2023.UI
                 rebuilt.Axes,
                 rebuilt.ElevationZM,
                 level.Label,
-                skipLevelFilter: true);
+                skipLevelFilter: true,
+                openings: rebuilt.Openings,
+                useCustomOpenings: rebuilt.UseCustomOpenings);
+            rebuilt.BoundaryConditions = boundariesForLevel;
             rebuilt.AllPlates = all;
             rebuilt.AvailableLevels = levels;
 
@@ -816,7 +848,7 @@ namespace LiraSlabZones.Revit2023.UI
                 ChkShowMesh.IsChecked == true,
                 ChkShowIso.IsChecked == true,
                 ChkShowAxes.IsChecked == true,
-                ChkShowPatches.IsChecked == true);
+                ChkShowPatchBoundaries.IsChecked == true);
         }
 
         private AnalysisSettings ReadSettingsFromUi()
@@ -825,7 +857,8 @@ namespace LiraSlabZones.Revit2023.UI
                 double.TryParse((s ?? "").Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var v) ? v : def;
             int I(string s, int def) => int.TryParse(s, out var v) ? v : def;
 
-            var barStep = ChkBarStep100.IsChecked == true ? 100 : 200;
+            var allowedBarSteps = ReadAllowedAdditionalBarSteps();
+            var barStep = allowedBarSteps.Contains(200) ? 200 : 100;
             var concrete = ComboIntOrText(CmbConcrete);
             if (concrete == "—" || concrete == "-") concrete = "";
 
@@ -845,6 +878,10 @@ namespace LiraSlabZones.Revit2023.UI
 
             var baseCfg = _result?.Settings ?? AppConfig.LoadEffectiveSettings();
             var straight = ResolveSelectedFamilyName();
+            var gridCellMm = Math.Max(1, I(TbGridCell.Text, 300));
+            var minimumZoneWidthM = Math.Max(
+                ParseZoneSizeMmToM(TbMinW.Text), gridCellMm / 1000.0);
+            TbMinW.Text = FormatZoneSizeMm(minimumZoneWidthM);
 
             var settings = new AnalysisSettings
             {
@@ -856,7 +893,7 @@ namespace LiraSlabZones.Revit2023.UI
                 BgBottomStepMm = botStep,
                 BgTopDiameterMm = topD,
                 BgTopStepMm = topStep,
-                MinZoneWidthM = ParseZoneSizeMmToM(TbMinW.Text),
+                MinZoneWidthM = minimumZoneWidthM,
                 MaxZoneWidthM = ParseZoneSizeMmToM(TbMaxW.Text),
                 MinZoneLengthM = ParseZoneSizeMmToM(TbMinL.Text),
                 MinActiveElements = I(TbMinFe.Text, 0),
@@ -878,11 +915,12 @@ namespace LiraSlabZones.Revit2023.UI
                 DetailSlider = detailSlider,
                 BarStepMm = barStep,
                 ExcludedZoneDiametersMm = _excludedZoneDiameters.OrderBy(d => d).ToList(),
-                UseBarStep100 = ChkBarStep100.IsChecked == true,
+                AllowedAdditionalBarStepsMm = allowedBarSteps.ToList(),
+                UseBarStep100 = allowedBarSteps.Contains(100),
                 ReverseZoneDirections = ChkReverseDirections.IsChecked == true,
                 AveragePatchPeaks = ChkAveragePeaks.IsChecked == true,
                 ConcreteClass = concrete,
-                GridCellMm = I(TbGridCell.Text, 300),
+                GridCellMm = gridCellMm,
                 SlabThicknessMm = D(TbThick.Text, 200),
                 CoverBottomMm = D(TbCoverBot.Text, 25),
                 CoverTopMm = D(TbCoverTop.Text, 25),
@@ -917,7 +955,8 @@ namespace LiraSlabZones.Revit2023.UI
             SelectCombo(CmbBgTopD, s.BgTopDiameterMm > 0 ? s.BgTopDiameterMm.ToString(CultureInfo.InvariantCulture) : "—");
             SelectCombo(CmbBgTopStep, s.BgTopStepMm > 0 ? s.BgTopStepMm.ToString(CultureInfo.InvariantCulture) : "—");
             UpdateBackgroundAsLabels(s);
-            TbMinW.Text = FormatZoneSizeMm(s.MinZoneWidthM);
+            var gridCellMm = Math.Max(1, s.GridCellMm > 0 ? s.GridCellMm : 300);
+            TbMinW.Text = FormatZoneSizeMm(Math.Max(s.MinZoneWidthM, gridCellMm / 1000.0));
             TbMaxW.Text = FormatZoneSizeMm(s.MaxZoneWidthM);
             TbMinL.Text = FormatZoneSizeMm(s.MinZoneLengthM);
             TbMinFe.Text = s.MinActiveElements.ToString(CultureInfo.InvariantCulture);
@@ -931,12 +970,23 @@ namespace LiraSlabZones.Revit2023.UI
             SldDetail.Value = DetailOptimizer.SliderFromStepIndex(
                 DetailOptimizer.StepIndexFromSlider(Math.Max(0, Math.Min(1, s.DetailSlider))));
             TxtDetail.Text = DetailOptimizer.LabelWithMass(SldDetail.Value, 0);
-            TbGridCell.Text = (s.GridCellMm > 0 ? s.GridCellMm : 300).ToString(CultureInfo.InvariantCulture);
+            TbGridCell.Text = gridCellMm.ToString(CultureInfo.InvariantCulture);
             TbThick.Text = s.SlabThicknessMm.ToString("0.##", CultureInfo.InvariantCulture);
             TbCoverBot.Text = s.CoverBottomMm.ToString("0.##", CultureInfo.InvariantCulture);
             TbCoverTop.Text = s.CoverTopMm.ToString("0.##", CultureInfo.InvariantCulture);
 
-            ChkBarStep100.IsChecked = s.UseBarStep100 || s.BarStepMm == 100;
+            var allowedBarSteps = (s.AllowedAdditionalBarStepsMm ?? new List<int>())
+                .Where(step => step == 100 || step == 200)
+                .Distinct()
+                .ToHashSet();
+            if (allowedBarSteps.Count == 0)
+            {
+                allowedBarSteps.Add(200);
+                if (s.UseBarStep100) allowedBarSteps.Add(100);
+            }
+            foreach (var item in BtnAllowedBarSteps.ContextMenu.Items.OfType<MenuItem>())
+                item.IsChecked = int.TryParse(item.Tag?.ToString(), out var step) && allowedBarSteps.Contains(step);
+            UpdateAllowedBarStepsButtonText();
             ChkReverseDirections.IsChecked = s.ReverseZoneDirections;
             ChkAveragePeaks.IsChecked = s.AveragePatchPeaks;
             SelectCombo(CmbConcrete, string.IsNullOrWhiteSpace(s.ConcreteClass) ? "—" : s.ConcreteClass);
@@ -948,6 +998,44 @@ namespace LiraSlabZones.Revit2023.UI
             TbFamilyPDiff.Text = s.FamilyPDiff ?? "";
             TbFamilyBent.Text = s.FamilyBentStick ?? "";
             UpdateLayoutGate(s);
+        }
+
+        private void BtnAllowedBarSteps_Click(object sender, RoutedEventArgs e)
+        {
+            var menu = BtnAllowedBarSteps.ContextMenu;
+            menu.PlacementTarget = BtnAllowedBarSteps;
+            menu.Placement = PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }
+
+        private void AllowedBarStepsChanged(object sender, RoutedEventArgs e)
+        {
+            if (_suppressUiEvents) return;
+            var menuItems = BtnAllowedBarSteps.ContextMenu.Items.OfType<MenuItem>().ToList();
+            if (!menuItems.Any(item => item.IsChecked))
+            {
+                _suppressUiEvents = true;
+                ((MenuItem)sender).IsChecked = true;
+                _suppressUiEvents = false;
+            }
+            UpdateAllowedBarStepsButtonText();
+            SettingsChanged(sender, e);
+        }
+
+        private int[] ReadAllowedAdditionalBarSteps() => BtnAllowedBarSteps.ContextMenu.Items
+            .OfType<MenuItem>()
+            .Where(item => item.IsChecked && int.TryParse(item.Tag?.ToString(), out _))
+            .Select(item => int.Parse(item.Tag!.ToString()!, CultureInfo.InvariantCulture))
+            .Where(step => step == 100 || step == 200)
+            .Distinct()
+            .OrderBy(step => step)
+            .DefaultIfEmpty(200)
+            .ToArray();
+
+        private void UpdateAllowedBarStepsButtonText()
+        {
+            var steps = ReadAllowedAdditionalBarSteps();
+            BtnAllowedBarSteps.Content = $"Шаги доп. армирования: {string.Join(" / ", steps)} мм";
         }
 
         private string ResolveSelectedFamilyName()

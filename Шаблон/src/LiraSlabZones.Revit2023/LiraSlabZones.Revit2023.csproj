@@ -25,11 +25,9 @@
     <ProjectReference Include="..\LiraSlabZones.Core\LiraSlabZones.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="LiraSlabZones.addin">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
     <None Include="..\..\DefaultSettings.cfg" Link="DefaultSettings.cfg">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 </Project>
+

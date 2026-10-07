@@ -341,6 +341,8 @@ namespace LiraSlabZones.Core
                     return true;
             }
 
+            Paths64? combinedZonePaths = null;
+            Paths64? combinedOpeningBuffers = null;
             if (nearby.Count > 1)
             {
                 var zonePaths = new Paths64();
@@ -352,6 +354,8 @@ namespace LiraSlabZones.Core
                         openingBuffers.AddRange(ClonePaths(GetZoneOpeningBuffers(zone, openings)));
                 }
 
+                combinedZonePaths = zonePaths;
+                combinedOpeningBuffers = openingBuffers;
                 var combinedCoverage = Clipper.Union(zonePaths, FillRule.NonZero);
                 if (ContainsFootprint(footprint.Paths, combinedCoverage) ||
                     ContainsFootprintNearOpening(footprint, combinedCoverage, openingBuffers))
@@ -386,6 +390,7 @@ namespace LiraSlabZones.Core
 
                 foreach (var bridge in GapBridges(first, second))
                 {
+                    combinedZonePaths?.Add(new Path64(bridge));
                     var coverage = Clipper.Union(
                         new Paths64 { ToPath(first.Contour), ToPath(second.Contour), bridge },
                         FillRule.NonZero);
@@ -393,6 +398,14 @@ namespace LiraSlabZones.Core
                         ContainsFootprintNearOpening(footprint, coverage,
                             MergeZoneOpeningBuffers(first, second, openings))) return true;
                 }
+            }
+
+            if (combinedZonePaths != null)
+            {
+                var bridgedCoverage = Clipper.Union(combinedZonePaths, FillRule.NonZero);
+                if (ContainsFootprint(footprint.Paths, bridgedCoverage) ||
+                    ContainsFootprintNearOpening(footprint, bridgedCoverage, combinedOpeningBuffers!))
+                    return true;
             }
             return false;
         }

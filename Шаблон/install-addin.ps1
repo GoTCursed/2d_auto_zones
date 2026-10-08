@@ -35,3 +35,4 @@ foreach ($version in $Versions) {
     Copy-Item -LiteralPath $manifest -Destination (Join-Path $addinDir 'LiraSlabZones.addin') -Force
     Write-Host "OK Revit ${version}: $deploy"
 }
+

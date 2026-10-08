@@ -52,12 +52,10 @@ Source: "..\addins\2022\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\R
 Source: "..\addins\2023\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2023"; Flags: ignoreversion
 Source: "..\addins\2025\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2025"; Flags: ignoreversion
 Source: "..\addins\2026\LiraSlabZones.addin"; DestDir: "{userappdata}\Autodesk\Revit\Addins\2026"; Flags: ignoreversion
-
 [Icons]
 Name: "{group}\LiraSlabZones Preview"; Filename: "{app}\tools\{#MyAppExeName}"
 Name: "{group}\Удалить LiraSlabZones"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\LiraSlabZones Preview"; Filename: "{app}\tools\{#MyAppExeName}"; Tasks: desktopicon
-
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
@@ -91,3 +89,4 @@ end;
 
 [Run]
 Filename: "{app}\tools\{#MyAppExeName}"; Description: "Запустить PreviewHost"; Flags: nowait postinstall skipifsilent unchecked
+

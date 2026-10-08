@@ -20,6 +20,7 @@ namespace LiraSlabZones.Revit2023.UI
         private List<LiraPlateElement> _plates = new List<LiraPlateElement>();
         private Action<AnalysisResult>? _placeCallback;
         private bool _suppressUiEvents;
+        private bool _updatingBoundaryToggle;
         private bool _busy;
         private bool _suppressZoneFamilySelection;
         private readonly HashSet<int> _excludedZoneDiameters = new HashSet<int>();
@@ -229,6 +230,7 @@ namespace LiraSlabZones.Revit2023.UI
                 : result.Zones.Count > 0);
             BtnPlace.IsEnabled = _placeCallback != null && editable && !patchMode;
             BtnBoundaryEditor.IsEnabled = result?.Plates?.Count > 0;
+            BtnApplyBoundaryRules.IsEnabled = result?.Plates?.Count > 0;
             BtnSaveJson.Content = result?.PatchPreviewOnly == true
                 ? "Сохранить JSON пятен…"
                 : "Сохранить JSON зон…";
@@ -245,7 +247,7 @@ namespace LiraSlabZones.Revit2023.UI
             BtnEditMerge.IsEnabled = editable;
             BtnEditGap.IsEnabled = editable;
             BtnEditDelete.IsEnabled = editable;
-            CmbDiagnostics.IsEnabled = result?.PatchPreviewOnly != true;
+            CmbDiagnostics.IsEnabled = result != null;
             ChkShowIso.Visibility = result?.PatchPreviewOnly == true ? Visibility.Collapsed : Visibility.Visible;
             ChkShowPatchBoundaries.Visibility = patchMode ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -459,6 +461,77 @@ namespace LiraSlabZones.Revit2023.UI
                     $"Не удалось открыть или применить редактор границ и отверстий.\n{ex.Message}",
                     "Ошибка редактора", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private void BtnApplyBoundaryRules_Checked(object sender, RoutedEventArgs e)
+        {
+            UpdateBoundaryRulesToggleLabel();
+            if (_suppressUiEvents || _updatingBoundaryToggle) return;
+            if (_result == null || _result.Plates.Count == 0) return;
+            try
+            {
+                var current = ReadSettingsFromUi();
+                var dialog = new SlabBoundaryRulesWindow(
+                    current.SlabThicknessMm, current.CoverBottomMm, current.CoverTopMm)
+                { Owner = this };
+                if (dialog.ShowDialog() != true)
+                {
+                    SetBoundaryRulesToggle(false);
+                    return;
+                }
+
+                _suppressUiEvents = true;
+                TbThick.Text = dialog.ThicknessMm.ToString("0.##", CultureInfo.InvariantCulture);
+                TbCoverBot.Text = dialog.CoverBottomMm.ToString("0.##", CultureInfo.InvariantCulture);
+                TbCoverTop.Text = dialog.CoverTopMm.ToString("0.##", CultureInfo.InvariantCulture);
+                _suppressUiEvents = false;
+
+                current = ReadSettingsFromUi();
+                current.HoleIgnorePerpMm = 0;
+                current.ApplySlabBoundaryAndOpeningRules = true;
+                current.ApplyHoleRules = true;
+                current.ApplyBentRules = true;
+                RebuildZonesPreservingView(fromUi: true);
+                Log($"Учтены отверстия и контур плиты; толщина {current.SlabThicknessMm:0.##} мм, " +
+                    $"защитные слои {current.CoverBottomMm:0.##}/{current.CoverTopMm:0.##} мм", "ok");
+            }
+            catch (Exception ex)
+            {
+                _suppressUiEvents = false;
+                SetBoundaryRulesToggle(false);
+                Log($"Ошибка применения границы плиты и отверстий: {ex}", "error");
+                MessageBox.Show(this,
+                    $"Не удалось учесть границу плиты и отверстия.\n{ex.Message}",
+                    "Ошибка расчёта", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void BtnApplyBoundaryRules_Unchecked(object sender, RoutedEventArgs e)
+        {
+            UpdateBoundaryRulesToggleLabel();
+            if (_suppressUiEvents || _updatingBoundaryToggle || _result == null) return;
+            var settings = ReadSettingsFromUi();
+            settings.ApplySlabBoundaryAndOpeningRules = false;
+            settings.ApplyHoleRules = false;
+            settings.ApplyBentRules = false;
+            RebuildZonesPreservingView(fromUi: true);
+            Log("Обработка границы плиты и отверстий отключена; зоны пересобраны без подрезки и загибов", "ok");
+        }
+
+        private void SetBoundaryRulesToggle(bool enabled)
+        {
+            _updatingBoundaryToggle = true;
+            try { BtnApplyBoundaryRules.IsChecked = enabled; }
+            finally { _updatingBoundaryToggle = false; }
+            UpdateBoundaryRulesToggleLabel();
+        }
+
+        private void UpdateBoundaryRulesToggleLabel()
+        {
+            if (TxtBoundaryRulesToggle == null) return;
+            TxtBoundaryRulesToggle.Text = BtnApplyBoundaryRules.IsChecked == true
+                ? "Граница и отверстия: включены"
+                : "Учитывать границу и отверстия";
         }
 
         private static bool TryGetLayerOnlyChanges(
@@ -924,8 +997,12 @@ namespace LiraSlabZones.Revit2023.UI
                 SlabThicknessMm = D(TbThick.Text, 200),
                 CoverBottomMm = D(TbCoverBot.Text, 25),
                 CoverTopMm = D(TbCoverTop.Text, 25),
-                ApplyHoleRules = true,
-                ApplyBentRules = true,
+                HoleIgnorePerpMm = BtnApplyBoundaryRules.IsChecked == true
+                    ? 0
+                    : _result?.Settings.HoleIgnorePerpMm ?? 200,
+                ApplySlabBoundaryAndOpeningRules = BtnApplyBoundaryRules.IsChecked == true,
+                ApplyHoleRules = BtnApplyBoundaryRules.IsChecked == true,
+                ApplyBentRules = BtnApplyBoundaryRules.IsChecked == true,
                 AlphaCoef = 1.0,
                 SlabEdgeInsetMm = 30,
                 SlabSelected = _result?.Settings.SlabSelected == true
@@ -974,6 +1051,8 @@ namespace LiraSlabZones.Revit2023.UI
             TbThick.Text = s.SlabThicknessMm.ToString("0.##", CultureInfo.InvariantCulture);
             TbCoverBot.Text = s.CoverBottomMm.ToString("0.##", CultureInfo.InvariantCulture);
             TbCoverTop.Text = s.CoverTopMm.ToString("0.##", CultureInfo.InvariantCulture);
+            BtnApplyBoundaryRules.IsChecked = s.ApplySlabBoundaryAndOpeningRules;
+            UpdateBoundaryRulesToggleLabel();
 
             var allowedBarSteps = (s.AllowedAdditionalBarStepsMm ?? new List<int>())
                 .Where(step => step == 100 || step == 200)

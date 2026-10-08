@@ -443,6 +443,8 @@ namespace LiraSlabZones.Core
         public double CoverTopMm { get; set; } = 25;
         public double CoverBottomMm { get; set; } = 25;
         public int MaxDiameterMm { get; set; } = 36;
+        /// <summary>Включает обработку зон у внешней границы плиты и отверстий.</summary>
+        public bool ApplySlabBoundaryAndOpeningRules { get; set; }
         public bool ApplyHoleRules { get; set; } = true;
         public bool ApplyBentRules { get; set; } = true;
         public double HoleIgnorePerpMm { get; set; } = 200;

@@ -59,6 +59,309 @@ namespace LiraSlabZones.Core
             zone.Comment = "шаг изменён в предпросмотре";
         }
 
+        public static int ApplyOuterBoundaryCuts(
+            IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
+            IList<Point3> outline, double jointGapMm)
+        {
+            if (zones == null || zones.Count == 0 || outline == null || outline.Count < 3)
+                return 0;
+
+            var changed = AlignLongitudinalEndsToBoundary(zones, plates, outline);
+            changed += SeparateOuterBoundaryJoints(zones, plates, outline, jointGapMm);
+            return changed;
+        }
+
+        private static int AlignLongitudinalEndsToBoundary(
+            IList<AdditionalZone> zones, IList<LiraPlateElement> plates, IList<Point3> outline)
+        {
+            var platesById = (plates ?? new List<LiraPlateElement>())
+                .GroupBy(plate => plate.Id).ToDictionary(group => group.Key, group => group.First());
+            var changed = 0;
+            // Resolve longer details first; at each rounded edge keep the outermost
+            // corner contact that still covers the assigned element centers.
+            foreach (var zone in zones.Where(zone => zone.Contour != null && zone.Contour.Count >= 3)
+                         .OrderByDescending(zone => zone.LengthMm))
+            {
+                var bounds = Bounds(zone.Contour);
+                var axialMin = zone.Direction == ZoneDirection.X ? bounds.MinX : bounds.MinY;
+                var axialMax = zone.Direction == ZoneDirection.X ? bounds.MaxX : bounds.MaxY;
+                var crossMin = zone.Direction == ZoneDirection.X ? bounds.MinY : bounds.MinX;
+                var crossMax = zone.Direction == ZoneDirection.X ? bounds.MaxY : bounds.MaxX;
+                var assigned = zone.NodeIds.Where(platesById.ContainsKey)
+                    .Select(id => platesById[id].Centroid).ToList();
+                var supportMin = assigned.Count == 0
+                    ? axialMin
+                    : assigned.Min(point => zone.Direction == ZoneDirection.X ? point.X : point.Y);
+                var supportMax = assigned.Count == 0
+                    ? axialMax
+                    : assigned.Max(point => zone.Direction == ZoneDirection.X ? point.X : point.Y);
+                var nextMin = axialMin;
+                var nextMax = axialMax;
+
+                if (EndHasOutsideCorner(zone.Direction, axialMin, crossMin, crossMax, outline))
+                {
+                    var candidates = new[] { crossMin, crossMax }
+                        .SelectMany(cross => AxisBoundaryIntersections(zone.Direction, cross, outline)
+                            .Select(value => (Value: value, Cross: cross)))
+                        .Where(candidate => candidate.Value >= axialMin - 1e-8 &&
+                                            candidate.Value <= supportMin + 1e-8)
+                        .Where(candidate => IsInsideAfterBoundary(zone.Direction,
+                            candidate.Value, candidate.Cross, outline, fromStart: true))
+                        .ToList();
+                    if (candidates.Count > 0) nextMin = candidates.Min(candidate => candidate.Value);
+                }
+
+                if (EndHasOutsideCorner(zone.Direction, axialMax, crossMin, crossMax, outline))
+                {
+                    var candidates = new[] { crossMin, crossMax }
+                        .SelectMany(cross => AxisBoundaryIntersections(zone.Direction, cross, outline)
+                            .Select(value => (Value: value, Cross: cross)))
+                        .Where(candidate => candidate.Value <= axialMax + 1e-8 &&
+                                            candidate.Value >= supportMax - 1e-8)
+                        .Where(candidate => IsInsideAfterBoundary(zone.Direction,
+                            candidate.Value, candidate.Cross, outline, fromStart: false))
+                        .ToList();
+                    if (candidates.Count > 0) nextMax = candidates.Max(candidate => candidate.Value);
+                }
+
+                if (nextMax - nextMin <= 0.05 ||
+                    (Math.Abs(nextMin - axialMin) <= 1e-8 && Math.Abs(nextMax - axialMax) <= 1e-8))
+                    continue;
+
+                SetContour(zone, Rectangle(
+                    zone.Direction == ZoneDirection.X ? nextMin : bounds.MinX,
+                    zone.Direction == ZoneDirection.X ? nextMax : bounds.MaxX,
+                    zone.Direction == ZoneDirection.X ? bounds.MinY : nextMin,
+                    zone.Direction == ZoneDirection.X ? bounds.MaxY : nextMax,
+                    zone.LevelZM));
+                zone.Comment = AppendBoundaryComment(zone.Comment, "торец привязан к внешнему контуру");
+                changed++;
+            }
+            return changed;
+        }
+
+        private static bool EndHasOutsideCorner(
+            ZoneDirection direction, double axial, double crossMin, double crossMax,
+            IList<Point3> outline)
+        {
+            return new[] { crossMin, crossMax }.Any(cross =>
+            {
+                var point = AxisPoint(direction, axial, cross);
+                return !PointInPolygonOrOnBoundary(point.X, point.Y, outline);
+            });
+        }
+
+        private static List<double> AxisBoundaryIntersections(
+            ZoneDirection direction, double cross, IList<Point3> outline)
+        {
+            const double tolerance = 1e-9;
+            var values = new List<double>();
+            for (var i = 0; i < outline.Count; i++)
+            {
+                var first = outline[i];
+                var second = outline[(i + 1) % outline.Count];
+                var firstCross = direction == ZoneDirection.X ? first.Y : first.X;
+                var secondCross = direction == ZoneDirection.X ? second.Y : second.X;
+                var firstAxis = direction == ZoneDirection.X ? first.X : first.Y;
+                var secondAxis = direction == ZoneDirection.X ? second.X : second.Y;
+                if (Math.Abs(firstCross - cross) <= tolerance &&
+                    Math.Abs(secondCross - cross) <= tolerance)
+                {
+                    values.Add(firstAxis);
+                    values.Add(secondAxis);
+                    continue;
+                }
+                if (cross < Math.Min(firstCross, secondCross) - tolerance ||
+                    cross > Math.Max(firstCross, secondCross) + tolerance ||
+                    Math.Abs(secondCross - firstCross) <= tolerance)
+                    continue;
+                var ratio = (cross - firstCross) / (secondCross - firstCross);
+                values.Add(firstAxis + ratio * (secondAxis - firstAxis));
+            }
+            var distinct = new List<double>();
+            foreach (var value in values.OrderBy(value => value))
+                if (distinct.Count == 0 || Math.Abs(value - distinct[distinct.Count - 1]) > 1e-8)
+                    distinct.Add(value);
+            return distinct;
+        }
+
+        private static bool IsInsideAfterBoundary(
+            ZoneDirection direction, double axial, double cross,
+            IList<Point3> outline, bool fromStart)
+        {
+            var inward = fromStart ? 1e-5 : -1e-5;
+            var probe = AxisPoint(direction, axial + inward, cross);
+            return MeshBoundary.PointInPolygon(probe.X, probe.Y, outline);
+        }
+
+        private static Point3 AxisPoint(ZoneDirection direction, double axial, double cross) =>
+            direction == ZoneDirection.X
+                ? new Point3(axial, cross, 0)
+                : new Point3(cross, axial, 0);
+
+        private static bool PointInPolygonOrOnBoundary(double x, double y, IList<Point3> outline)
+        {
+            const double tolerance = 1e-8;
+            for (var i = 0; i < outline.Count; i++)
+            {
+                var a = outline[i];
+                var b = outline[(i + 1) % outline.Count];
+                var dx = b.X - a.X;
+                var dy = b.Y - a.Y;
+                var lengthSquared = dx * dx + dy * dy;
+                var t = lengthSquared <= tolerance ? 0 :
+                    Math.Max(0, Math.Min(1, ((x - a.X) * dx + (y - a.Y) * dy) / lengthSquared));
+                var px = a.X + t * dx;
+                var py = a.Y + t * dy;
+                if ((x - px) * (x - px) + (y - py) * (y - py) <= tolerance * tolerance)
+                    return true;
+            }
+            return MeshBoundary.PointInPolygon(x, y, outline);
+        }
+
+        private static int SeparateOuterBoundaryJoints(
+            IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
+            IList<Point3> outline, double gapMm)
+        {
+            var gap = UnitConversion.MmToMeters(Math.Max(0, gapMm));
+            if (gap <= 1e-8 || zones.Count < 2) return 0;
+            var changed = 0;
+            var platesById = (plates ?? new List<LiraPlateElement>())
+                .GroupBy(plate => plate.Id).ToDictionary(group => group.Key, group => group.First());
+            var ordered = zones.Where(zone => zone.Contour != null && zone.Contour.Count >= 3)
+                .OrderByDescending(zone => zone.LengthMm).ToList();
+            for (var i = 0; i < ordered.Count; i++)
+            for (var j = i + 1; j < ordered.Count; j++)
+            {
+                var longer = ordered[i];
+                var shorter = ordered[j];
+                if (longer.Layer != shorter.Layer || longer.Direction != shorter.Direction ||
+                    longer.NodeIds.Intersect(shorter.NodeIds).Any())
+                    continue;
+                var a = Bounds(longer.Contour);
+                var b = Bounds(shorter.Contour);
+                var longCrossMin = longer.Direction == ZoneDirection.X ? a.MinY : a.MinX;
+                var longCrossMax = longer.Direction == ZoneDirection.X ? a.MaxY : a.MaxX;
+                var shortCrossMin = shorter.Direction == ZoneDirection.X ? b.MinY : b.MinX;
+                var shortCrossMax = shorter.Direction == ZoneDirection.X ? b.MaxY : b.MaxX;
+                var crossMin = Math.Max(longCrossMin, shortCrossMin);
+                var crossMax = Math.Min(longCrossMax, shortCrossMax);
+                if (crossMax - crossMin <= 0.05) continue;
+                var longMin = longer.Direction == ZoneDirection.X ? a.MinX : a.MinY;
+                var longMax = longer.Direction == ZoneDirection.X ? a.MaxX : a.MaxY;
+                var shortMin = shorter.Direction == ZoneDirection.X ? b.MinX : b.MinY;
+                var shortMax = shorter.Direction == ZoneDirection.X ? b.MaxX : b.MaxY;
+                if (Math.Min(longMax, shortMax) - Math.Max(longMin, shortMin) <= 1e-8)
+                    continue;
+
+                var candidates = new List<(bool TrimStart, double Coordinate)>();
+                if (longMin < shortMin - 1e-8 && longMax > shortMin)
+                    candidates.Add((false, shortMin - gap));
+                if (longMax > shortMax + 1e-8 && longMin < shortMax)
+                    candidates.Add((true, shortMax + gap));
+                foreach (var candidate in candidates)
+                {
+                    var newMin = candidate.TrimStart ? candidate.Coordinate : longMin;
+                    var newMax = candidate.TrimStart ? longMax : candidate.Coordinate;
+                    if (newMax - newMin <= 0.05 ||
+                        (candidate.TrimStart && newMin <= longMin) ||
+                        (!candidate.TrimStart && newMax >= longMax))
+                        continue;
+                    var removedMin = candidate.TrimStart ? longMin : newMax;
+                    var removedMax = candidate.TrimStart ? newMin : longMax;
+                    var strip = longer.Direction == ZoneDirection.X
+                        ? (MinX: removedMin, MaxX: removedMax, MinY: longCrossMin, MaxY: longCrossMax)
+                        : (MinX: longCrossMin, MaxX: longCrossMax, MinY: removedMin, MaxY: removedMax);
+                    if (!RectangleOutsideOutline(strip.MinX, strip.MaxX,
+                            strip.MinY, strip.MaxY, outline) ||
+                        !CanDropAssignedElements(longer, shorter, candidate.TrimStart,
+                            candidate.Coordinate, platesById))
+                        continue;
+
+                    SetContour(longer, Rectangle(
+                        longer.Direction == ZoneDirection.X ? newMin : a.MinX,
+                        longer.Direction == ZoneDirection.X ? newMax : a.MaxX,
+                        longer.Direction == ZoneDirection.X ? a.MinY : newMin,
+                        longer.Direction == ZoneDirection.X ? a.MaxY : newMax,
+                        longer.LevelZM));
+                    TransferDroppedAssignedElements(longer, shorter, platesById);
+                    longer.Comment = AppendBoundaryComment(longer.Comment,
+                        $"стык у края: зазор {gapMm:0} мм");
+                    changed++;
+                    break;
+                }
+            }
+            return changed;
+        }
+
+        private static bool CanDropAssignedElements(
+            AdditionalZone source, AdditionalZone covering, bool trimStart, double coordinate,
+            IDictionary<int, LiraPlateElement> platesById)
+        {
+            var sourceBounds = Bounds(source.Contour);
+            var retainedMin = source.Direction == ZoneDirection.X ? sourceBounds.MinX : sourceBounds.MinY;
+            var retainedMax = source.Direction == ZoneDirection.X ? sourceBounds.MaxX : sourceBounds.MaxY;
+            if (trimStart) retainedMin = coordinate; else retainedMax = coordinate;
+            var coverBounds = Bounds(covering.Contour);
+            var required = Math.Max(source.AsRequired, source.AsAdditional);
+            foreach (var id in source.NodeIds)
+            {
+                if (!platesById.TryGetValue(id, out var plate)) continue;
+                var axial = source.Direction == ZoneDirection.X ? plate.Centroid.X : plate.Centroid.Y;
+                if (axial >= retainedMin - 1e-8 && axial <= retainedMax + 1e-8) continue;
+                var coveredAxially = source.Direction == ZoneDirection.X
+                    ? plate.Centroid.X >= coverBounds.MinX - 1e-8 && plate.Centroid.X <= coverBounds.MaxX + 1e-8
+                    : plate.Centroid.Y >= coverBounds.MinY - 1e-8 && plate.Centroid.Y <= coverBounds.MaxY + 1e-8;
+                var coveredTransversely = source.Direction == ZoneDirection.X
+                    ? plate.Centroid.Y >= coverBounds.MinY - 1e-8 && plate.Centroid.Y <= coverBounds.MaxY + 1e-8
+                    : plate.Centroid.X >= coverBounds.MinX - 1e-8 && plate.Centroid.X <= coverBounds.MaxX + 1e-8;
+                if (!coveredAxially || !coveredTransversely ||
+                    covering.AsCoveredCm2PerM + 1e-6 < required)
+                    return false;
+            }
+            return true;
+        }
+
+        private static void TransferDroppedAssignedElements(
+            AdditionalZone source, AdditionalZone target,
+            IDictionary<int, LiraPlateElement> platesById)
+        {
+            if (source.NodeIds.Count == 0) return;
+            var sourceBounds = Bounds(source.Contour);
+            var retained = new List<int>();
+            var transferred = new List<int>();
+            foreach (var id in source.NodeIds.Distinct())
+            {
+                if (!platesById.TryGetValue(id, out var plate))
+                {
+                    retained.Add(id);
+                    continue;
+                }
+                var inside = plate.Centroid.X >= sourceBounds.MinX - 1e-8 &&
+                             plate.Centroid.X <= sourceBounds.MaxX + 1e-8 &&
+                             plate.Centroid.Y >= sourceBounds.MinY - 1e-8 &&
+                             plate.Centroid.Y <= sourceBounds.MaxY + 1e-8;
+                (inside ? retained : transferred).Add(id);
+            }
+            source.NodeIds = retained;
+            source.ElementId = retained.FirstOrDefault();
+            target.NodeIds = target.NodeIds.Concat(transferred).Distinct().ToList();
+            target.ElementId = target.NodeIds.FirstOrDefault();
+        }
+
+        private static bool RectangleOutsideOutline(
+            double minX, double maxX, double minY, double maxY, IList<Point3> outline)
+        {
+            if (maxX - minX <= 1e-8 || maxY - minY <= 1e-8) return true;
+            var overlap = Clipper.Intersect(new Paths64 { ToPath(Rectangle(minX, maxX, minY, maxY, 0)) },
+                new Paths64 { ToPath(outline) }, FillRule.NonZero);
+            return overlap.Sum(path => Math.Abs(Clipper.Area(path))) <= 1;
+        }
+
+        private static string AppendBoundaryComment(string current, string addition) =>
+            string.IsNullOrWhiteSpace(current) ? addition : current.Contains(addition)
+                ? current : current + "; " + addition;
+
         public static int EnsureAssignedCapacity(
             IList<AdditionalZone> zones, IList<LiraPlateElement> plates, AnalysisSettings settings)
         {
@@ -1013,7 +1316,8 @@ namespace LiraSlabZones.Core
         public static void EnforceMaximumDetailLength(
             IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
             IList<Point3> outline,
-            int maximumLengthMm = 11700)
+            int maximumLengthMm = 11700,
+            bool allowBoundaryCornerOverrun = false)
         {
             var centroids = plates.ToDictionary(plate => plate.Id, plate => plate.Centroid);
             for (var index = zones.Count - 1; index >= 0; index--)
@@ -1073,7 +1377,8 @@ namespace LiraSlabZones.Core
                     var maxX = source.Direction == ZoneDirection.X ? b : bounds.MaxX;
                     var minY = source.Direction == ZoneDirection.Y ? a : bounds.MinY;
                     var maxY = source.Direction == ZoneDirection.Y ? b : bounds.MaxY;
-                    if (!RectangleInsideOutline(minX, maxX, minY, maxY, outline))
+                    if (!allowBoundaryCornerOverrun &&
+                        !RectangleInsideOutline(minX, maxX, minY, maxY, outline))
                     {
                         var sourcePoints = source.NodeIds
                             .Where(centroids.ContainsKey)
@@ -1358,6 +1663,26 @@ namespace LiraSlabZones.Core
             return false;
         }
 
+        public static bool IsFullyInsideOpening(AdditionalZone zone, IList<OpeningInfo> openings)
+        {
+            if (zone.Contour.Count < 3 || openings == null || openings.Count == 0)
+                return false;
+            var zonePath = ToPath(zone.Contour);
+            var zoneArea = Math.Abs(Clipper.Area(zonePath));
+            if (zoneArea <= 0.5) return false;
+
+            var openingPaths = openings.Select(opening => ToPath(Rectangle(
+                opening.MinXM, opening.MaxXM, opening.MinYM, opening.MaxYM, zone.LevelZM)))
+                .Where(path => path.Count >= 3 && Math.Abs(Clipper.Area(path)) > 0.5)
+                .ToList();
+            if (openingPaths.Count == 0) return false;
+
+            var openingUnion = Clipper.Union(new Paths64(openingPaths), FillRule.NonZero);
+            var remaining = Clipper.Difference(new Paths64 { zonePath }, openingUnion, FillRule.NonZero);
+            var remainingArea = remaining.Sum(path => Math.Abs(Clipper.Area(path)));
+            return remainingArea <= Math.Max(1.0, zoneArea * 1e-8);
+        }
+
         public static List<AdditionalZone> ExcludeOpenings(AdditionalZone zone, IList<OpeningInfo> openings)
         {
             var parts = new List<AdditionalZone> { zone };
@@ -1484,8 +1809,7 @@ namespace LiraSlabZones.Core
                         bounds = Bounds(part.Contour);
                     }
                     part.VerticalLegMm = HoleBentRules.VerticalLegAvailableMm(
-                        settings.SlabThicknessMm, settings.CoverTopMm,
-                        settings.CoverBottomMm, part.DiameterMm);
+                        settings, part.Layer, part.DiameterMm);
                     part.FamilyKind = HoleBentRules.ChooseBentFamily(part.VerticalLegMm, part.DiameterMm);
                     part.FamilyFileName = settings.GetFamilyName(part.FamilyKind);
                     part.CountBars = true;

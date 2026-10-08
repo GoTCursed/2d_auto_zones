@@ -90,6 +90,11 @@ namespace LiraSlabZones.Core
             }
         }
 
+        public static void ApplyBoundaryFamilies(
+            IEnumerable<AdditionalZone> zones,
+            AnalysisSettings settings,
+            IList<Point3>? outline) => ApplyFinalEdgeFamilies(zones, settings, outline);
+
         private static List<AdditionalZone> LayoutLayer(
             MosaicGrid mosaic,
             RebarLayer layer,
@@ -1520,7 +1525,8 @@ namespace LiraSlabZones.Core
             AnalysisSettings settings,
             IList<Point3>? outline)
         {
-            if (!settings.ApplyBentRules || outline == null || outline.Count < 3)
+            if (!settings.ApplySlabBoundaryAndOpeningRules || !settings.ApplyBentRules ||
+                outline == null || outline.Count < 3)
                 return;
 
             var offsetM = UnitConversion.MmToMeters(settings.EdgeOffsetMm);
@@ -1535,8 +1541,7 @@ namespace LiraSlabZones.Core
                 if (nearEdge && zone.FamilyKind == ZoneFamilyKind.Straight)
                 {
                     zone.VerticalLegMm = HoleBentRules.VerticalLegAvailableMm(
-                        settings.SlabThicknessMm, settings.CoverTopMm,
-                        settings.CoverBottomMm, zone.DiameterMm);
+                        settings, zone.Layer, zone.DiameterMm);
                     zone.FamilyKind = HoleBentRules.ChooseBentFamily(zone.VerticalLegMm, zone.DiameterMm);
                     zone.FamilyFileName = settings.GetFamilyName(zone.FamilyKind);
                     zone.CountInSpec = false;
@@ -1784,8 +1789,7 @@ namespace LiraSlabZones.Core
                                 outline, 0))
                             continue;
                         verticalLeg = HoleBentRules.VerticalLegAvailableMm(
-                            settings.SlabThicknessMm, settings.CoverTopMm,
-                            settings.CoverBottomMm, option.DiameterMm);
+                            settings, layer, option.DiameterMm);
                         familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, option.DiameterMm);
                         countInSpec = false;
                         countBars = true;
@@ -1795,12 +1799,12 @@ namespace LiraSlabZones.Core
                                               Math.Abs(zoneMaxX - beforeConflictClip.zoneMaxX) > 1e-6 ||
                                               Math.Abs(zoneMinY - beforeConflictClip.zoneMinY) > 1e-6 ||
                                               Math.Abs(zoneMaxY - beforeConflictClip.zoneMaxY) > 1e-6;
-                    if (conflictClipTrimmed && settings.ApplyBentRules &&
+                    if (conflictClipTrimmed && settings.ApplySlabBoundaryAndOpeningRules &&
+                        settings.ApplyBentRules &&
                         familyKind == ZoneFamilyKind.Straight)
                     {
                         verticalLeg = HoleBentRules.VerticalLegAvailableMm(
-                            settings.SlabThicknessMm, settings.CoverTopMm,
-                            settings.CoverBottomMm, option.DiameterMm);
+                            settings, layer, option.DiameterMm);
                         familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, option.DiameterMm);
                         countInSpec = false;
                         countBars = true;
@@ -1810,11 +1814,11 @@ namespace LiraSlabZones.Core
                                         Math.Abs(zoneMaxX - beforeContourClip.MaxX) > 1e-6 ||
                                         Math.Abs(zoneMinY - beforeContourClip.MinY) > 1e-6 ||
                                         Math.Abs(zoneMaxY - beforeContourClip.MaxY) > 1e-6;
-                    if (trimmedBySlab && settings.ApplyBentRules && familyKind == ZoneFamilyKind.Straight)
+                    if (trimmedBySlab && settings.ApplySlabBoundaryAndOpeningRules &&
+                        settings.ApplyBentRules && familyKind == ZoneFamilyKind.Straight)
                     {
                         verticalLeg = HoleBentRules.VerticalLegAvailableMm(
-                            settings.SlabThicknessMm, settings.CoverTopMm,
-                            settings.CoverBottomMm, option.DiameterMm);
+                            settings, layer, option.DiameterMm);
                         familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, option.DiameterMm);
                         countInSpec = false;
                         countBars = true;
@@ -1978,8 +1982,7 @@ namespace LiraSlabZones.Core
                                 outline, 0))
                             continue;
                         verticalLeg = HoleBentRules.VerticalLegAvailableMm(
-                            settings.SlabThicknessMm, settings.CoverTopMm,
-                            settings.CoverBottomMm, option.DiameterMm);
+                            settings, layer, option.DiameterMm);
                         familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, option.DiameterMm);
                         countInSpec = false;
                         countBars = true;
@@ -2785,7 +2788,7 @@ namespace LiraSlabZones.Core
             ref bool countInSpec,
             ref bool countBars)
         {
-            if (settings.ApplyHoleRules && openings.Count > 0)
+            if (settings.ApplySlabBoundaryAndOpeningRules && settings.ApplyHoleRules && openings.Count > 0)
             {
                 foreach (var op in openings)
                 {
@@ -2808,10 +2811,10 @@ namespace LiraSlabZones.Core
                         if (coreCy < (op.MinYM + op.MaxYM) / 2) maxYM = Math.Min(maxYM, op.MinYM - off);
                         else minYM = Math.Max(minYM, op.MaxYM + off);
                     }
-                    if (settings.ApplyBentRules)
+                    if (settings.ApplySlabBoundaryAndOpeningRules && settings.ApplyBentRules)
                     {
                         verticalLeg = HoleBentRules.VerticalLegAvailableMm(
-                            settings.SlabThicknessMm, settings.CoverTopMm, settings.CoverBottomMm, dZone);
+                            settings, layer, dZone);
                         familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, dZone);
                         countInSpec = false;
                         countBars = true;
@@ -2820,7 +2823,8 @@ namespace LiraSlabZones.Core
                 }
             }
 
-            if (settings.ApplyBentRules && outline != null && outline.Count >= 3)
+            if (settings.ApplySlabBoundaryAndOpeningRules && settings.ApplyBentRules &&
+                outline != null && outline.Count >= 3)
             {
                 var off = UnitConversion.MmToMeters(settings.EdgeOffsetMm);
                 // Use the real polygon boundary. A global AABB misses rounded and
@@ -2829,7 +2833,7 @@ namespace LiraSlabZones.Core
                 if (nearEdge && familyKind == ZoneFamilyKind.Straight)
                 {
                     verticalLeg = HoleBentRules.VerticalLegAvailableMm(
-                        settings.SlabThicknessMm, settings.CoverTopMm, settings.CoverBottomMm, dZone);
+                        settings, layer, dZone);
                     familyKind = HoleBentRules.ChooseBentFamily(verticalLeg, dZone);
                     countInSpec = false;
                     countBars = true;

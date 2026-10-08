@@ -1080,6 +1080,94 @@ Assert ($warnedLongZones[0].StatusColor -eq 'warn' -and
         $warnedLongZones[0].Comment.Contains('анкеровка выходит за контур плиты')) `
     'Anchorage extending outside the supplied slab outline must be visibly warned, not clipped.'
 
+$boundaryOutline = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$boundaryOutline.Add([LiraSlabZones.Core.Point3]::new(0, 0, 0))
+$boundaryOutline.Add([LiraSlabZones.Core.Point3]::new(4, 0, 0))
+$boundaryOutline.Add([LiraSlabZones.Core.Point3]::new(4, 4, 0))
+$boundaryOutline.Add([LiraSlabZones.Core.Point3]::new(0, 4, 0))
+$boundaryOffSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$boundaryOffSettings.ApplyBentRules = $true
+$boundaryOffZone = New-TestZone 1 3 0.01 0.21 ([LiraSlabZones.Core.ZoneDirection]::X)
+$boundaryOffZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$boundaryOffZones.Add($boundaryOffZone)
+[LiraSlabZones.Core.ZoneLayoutEngine]::ApplyBoundaryFamilies(
+    $boundaryOffZones, $boundaryOffSettings, $boundaryOutline)
+Assert ($boundaryOffZone.FamilyKind -eq [LiraSlabZones.Core.ZoneFamilyKind]::Straight) `
+    'Boundary-family processing must remain off unless its explicit toggle is enabled.'
+$boundaryOnSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$boundaryOnSettings.ApplySlabBoundaryAndOpeningRules = $true
+$boundaryOnSettings.ApplyBentRules = $true
+$boundaryOnZone = New-TestZone 1 3 0.01 0.21 ([LiraSlabZones.Core.ZoneDirection]::X)
+$boundaryOnZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$boundaryOnZones.Add($boundaryOnZone)
+[LiraSlabZones.Core.ZoneLayoutEngine]::ApplyBoundaryFamilies(
+    $boundaryOnZones, $boundaryOnSettings, $boundaryOutline)
+Assert ($boundaryOnZone.FamilyKind -ne [LiraSlabZones.Core.ZoneFamilyKind]::Straight) `
+    'Enabling the boundary toggle must assign the appropriate bent family at a slab edge.'
+
+$boundaryPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$boundaryPlates.Add((New-QuadPlate 9101 0.4 0.6 1.2 1.4 5))
+$boundaryPlates.Add((New-QuadPlate 9102 3.4 3.6 1.2 1.4 5))
+$boundaryCutZone = New-TestZone -0.2 4.2 0.5 3.5 ([LiraSlabZones.Core.ZoneDirection]::X)
+$boundaryCutZone.NodeIds.Add(9101)
+$boundaryCutZone.NodeIds.Add(9102)
+$boundaryCutZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$boundaryCutZones.Add($boundaryCutZone)
+[LiraSlabZones.Core.ZoneEditor]::ApplyOuterBoundaryCuts(
+    $boundaryCutZones, $boundaryPlates, $boundaryOutline, 50) | Out-Null
+Assert ([Math]::Abs((($boundaryCutZone.Contour | Measure-Object -Property X -Minimum).Minimum)) -lt 1e-8 -and
+        [Math]::Abs((($boundaryCutZone.Contour | Measure-Object -Property X -Maximum).Maximum) - 4) -lt 1e-8 -and
+        $boundaryCutZone.NodeIds.Count -eq 2) `
+    'Straight slab edges must trim only the longitudinal ends and retain all assigned FEs.'
+
+$boundaryYPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$boundaryYPlates.Add((New-QuadPlate 9104 1.2 1.4 0.4 0.6 5))
+$boundaryYPlates.Add((New-QuadPlate 9105 1.2 1.4 3.4 3.6 5))
+$boundaryYZone = New-TestZone 0.5 3.5 -0.2 4.2 ([LiraSlabZones.Core.ZoneDirection]::Y)
+$boundaryYZone.NodeIds.Add(9104)
+$boundaryYZone.NodeIds.Add(9105)
+$boundaryYZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$boundaryYZones.Add($boundaryYZone)
+[LiraSlabZones.Core.ZoneEditor]::ApplyOuterBoundaryCuts(
+    $boundaryYZones, $boundaryYPlates, $boundaryOutline, 50) | Out-Null
+Assert ([Math]::Abs((($boundaryYZone.Contour | Measure-Object -Property Y -Minimum).Minimum)) -lt 1e-8 -and
+        [Math]::Abs((($boundaryYZone.Contour | Measure-Object -Property Y -Maximum).Maximum) - 4) -lt 1e-8 -and
+        $boundaryYZone.NodeIds.Count -eq 2) `
+    'Y-directed bars must use the same longitudinal boundary trimming and retain assigned FEs.'
+
+$roundedBoundary = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$roundedBoundary.Add([LiraSlabZones.Core.Point3]::new(0, 0, 0))
+$roundedBoundary.Add([LiraSlabZones.Core.Point3]::new(4, 0, 0))
+$roundedBoundary.Add([LiraSlabZones.Core.Point3]::new(4, 3, 0))
+$roundedBoundary.Add([LiraSlabZones.Core.Point3]::new(3, 4, 0))
+$roundedBoundary.Add([LiraSlabZones.Core.Point3]::new(0, 4, 0))
+$roundedPlate = New-QuadPlate 9103 3.3 3.5 2.9 3.1 5
+$roundedPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$roundedPlates.Add($roundedPlate)
+$roundedZone = New-TestZone 2 4.5 2.5 3.8 ([LiraSlabZones.Core.ZoneDirection]::X)
+$roundedZone.NodeIds.Add(9103)
+$roundedZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$roundedZones.Add($roundedZone)
+[LiraSlabZones.Core.ZoneEditor]::ApplyOuterBoundaryCuts(
+    $roundedZones, $roundedPlates, $roundedBoundary, 50) | Out-Null
+Assert ([Math]::Abs((($roundedZone.Contour | Measure-Object -Property X -Maximum).Maximum) - 4) -lt 1e-8 -and
+        [Math]::Abs((($roundedZone.Contour | Where-Object { [Math]::Abs($_.X - 4) -lt 1e-8 } |
+            Select-Object -First 1).Y) - 2.5) -lt 1e-8) `
+    'At a rounded corner, the longest valid cut must leave a zone corner exactly on the outline.'
+
+$jointLong = New-TestZone 4.2 5 1 1.8 ([LiraSlabZones.Core.ZoneDirection]::X)
+$jointShort = New-TestZone 3.8 4.3 1 1.8 ([LiraSlabZones.Core.ZoneDirection]::X)
+$jointZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$jointZones.Add($jointLong)
+$jointZones.Add($jointShort)
+[LiraSlabZones.Core.ZoneEditor]::ApplyOuterBoundaryCuts(
+    $jointZones, [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new(),
+    $boundaryOutline, 50) | Out-Null
+Assert ([Math]::Abs((($jointLong.Contour | Measure-Object -Property X -Minimum).Minimum) - 4.35) -lt 1e-8 -and
+        [Math]::Abs((($jointLong.Contour | Measure-Object -Property X -Minimum).Minimum) -
+            (($jointShort.Contour | Measure-Object -Property X -Maximum).Maximum) - 0.05) -lt 1e-8) `
+    'A longitudinal overlap fully outside the slab must be removed from the longer detail with the configured joint gap.'
+
 $gaplessSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
 $gaplessSettings.ShowAs1 = $true
 $gaplessSettings.ShowAs2 = $false
@@ -2028,6 +2116,31 @@ Assert ($containedResult.AbsorbedContainedZones -eq 1 -and $containedZones.Count
         [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
             $containedZones, $containedPlates[0], [LiraSlabZones.Core.RebarLayer]::As1, 15)) `
     'A contained zone may be absorbed by a stronger outer zone only while retaining FE coverage.'
+
+$savedContainedZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$savedOuter = New-TestZone 0 4 0 2 ([LiraSlabZones.Core.ZoneDirection]::X) 25 200
+$savedInner = New-TestZone 1 3 0.6 1.4 ([LiraSlabZones.Core.ZoneDirection]::X) 20 200
+$savedOuter.AsAdditional = 5
+$savedInner.AsAdditional = 15
+$savedInner.NodeIds.Add(1501)
+$savedContainedZones.Add($savedOuter)
+$savedContainedZones.Add($savedInner)
+$savedSupports = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$savedPatches = [Collections.Generic.Dictionary[LiraSlabZones.Core.AdditionalZone,LiraSlabZones.Core.ZonePatchFrameBounds]]::new()
+$savedSupports.Add($savedOuter, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 2))
+$savedSupports.Add($savedInner, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(1, 3, 0.6, 1.4))
+$savedPatches.Add($savedOuter, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(0, 4, 0, 2))
+$savedPatches.Add($savedInner, [LiraSlabZones.Core.ZonePatchFrameBounds]::new(1, 3, 0.6, 1.4))
+$savedPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$savedPlates.Add((New-QuadPlate 1501 1.2 1.8 0.8 1.2 15))
+$savedResult = [LiraSlabZones.Core.ZonePatchNeighborLayout]::ResolveContainedOverlaps(
+    $savedContainedZones, $savedSupports, $savedPatches, $savedPlates,
+    $nestedSettings, $null, $null)
+Assert ($savedResult.AbsorbedContainedZones -eq 1 -and $savedContainedZones.Count -eq 1 -and
+        $savedContainedZones[0].DiameterMm -eq 25 -and
+        [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+            $savedContainedZones, $savedPlates[0], [LiraSlabZones.Core.RebarLayer]::As1, 15)) `
+    'Saved nested zones must be resolved by containment-only processing while retaining FE coverage.'
 
 $splitZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $splitOuter = New-TestZone 0 4 0 3 ([LiraSlabZones.Core.ZoneDirection]::X) 16 200

@@ -18,6 +18,7 @@ namespace LiraSlabZones.Revit2023.UI
     public sealed class PreviewViewport : FrameworkElement
     {
         private const int MaxUndoActions = 50;
+        private const double ZoneLabelMinZoom = 1.0;
         private enum ResizeEdge { None, Left, Right, Bottom, Top }
         private AnalysisResult? _result;
         private readonly List<string> _undo = new();
@@ -497,7 +498,7 @@ namespace LiraSlabZones.Revit2023.UI
 
             var diagnosticZoneBrushes = GetDiagnosticZoneBrushes();
             drawn = 0;
-            bool labels = _zoom >= 1.6;
+            bool labels = _zoom >= ZoneLabelMinZoom;
             bool dims = _zoom >= 1.5;
             var typeface = new Typeface("Segoe UI");
             var dimPen = new Pen(new SolidColorBrush(Color.FromArgb(230, 30, 30, 30)), Math.Max(1e-4, 1.0 / s));
@@ -1682,7 +1683,7 @@ namespace LiraSlabZones.Revit2023.UI
         private void DrawPatchZoneLabels(
             DrawingContext dc, double scale, double minX, double maxX, double minY, double maxY)
         {
-            if (_zoom < 1.6) return;
+            if (_zoom < ZoneLabelMinZoom) return;
             var typeface = new Typeface("Segoe UI");
 
             foreach (var shape in _drawPatchZones)

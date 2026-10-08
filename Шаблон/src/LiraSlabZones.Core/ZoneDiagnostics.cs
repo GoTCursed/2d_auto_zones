@@ -12,7 +12,10 @@ namespace LiraSlabZones.Core
         EmptyZone,
         InvalidZone,
         OverlongBar,
-        PlacementConflict
+        PlacementConflict,
+        InterZoneStep,
+        OpeningIntersection,
+        OutsideSlab
     }
 
     public sealed class ZoneIssue
@@ -20,6 +23,7 @@ namespace LiraSlabZones.Core
         public ZoneIssueKind Kind { get; set; }
         public RebarLayer Layer { get; set; }
         public int ZoneId { get; set; }
+        public int RelatedZoneId { get; set; }
         public int ElementId { get; set; }
         public string Message { get; set; } = string.Empty;
     }
@@ -31,7 +35,8 @@ namespace LiraSlabZones.Core
         public bool LayoutConverged { get; set; }
         public int UncoveredCount => Issues.Count(i => i.Kind == ZoneIssueKind.UncoveredElement);
         public int EmptyZoneCount => Issues.Count(i => i.Kind == ZoneIssueKind.EmptyZone);
-        public int ConflictCount => Issues.Count(i => i.Kind == ZoneIssueKind.PlacementConflict);
+        public int ConflictCount => Issues.Count(i => i.Kind == ZoneIssueKind.PlacementConflict ||
+            i.Kind == ZoneIssueKind.InterZoneStep);
         public bool HasErrors => Issues.Count > 0;
     }
 
@@ -71,6 +76,10 @@ namespace LiraSlabZones.Core
 
     public static class ZoneLayoutDiagnostics
     {
+        private const double DiagnosticGeometryScale = 1000000.0;
+        private const double StepMatchToleranceM = 0.001;
+        private const double OpeningOverlapToleranceM = 0.000001;
+
         public static ZoneDiagnostics Evaluate(
             IList<LiraPlateElement> plates, IList<AdditionalZone> zones, AnalysisSettings settings,
             int iterations = 0, bool converged = true) =>
@@ -93,7 +102,8 @@ namespace LiraSlabZones.Core
                 {
                     var requiredAdditional = plate.Rebar.Get(layer) - background;
                     if (ZoneCoverageRules.CoversOrBridgesGap(
-                            layerZones, plate, layer, requiredAdditional, slabOutline, openings)) continue;
+                            layerZones, plate, layer, requiredAdditional, slabOutline, openings,
+                            allowOverlappingZones: true)) continue;
                     result.Issues.Add(new ZoneIssue { Kind = ZoneIssueKind.UncoveredElement,
                         Layer = layer, ElementId = plate.Id, Message = "КЭ не покрыт зоной" });
                 }
@@ -117,11 +127,25 @@ namespace LiraSlabZones.Core
                         ZoneCoverageRules.CoversOrBridgesGap(
                             new[] { zone }, plate, zone.Layer,
                             plate.Rebar.Get(zone.Layer) - Background(zone.Layer, settings),
-                            slabOutline, openings));
+                            slabOutline, openings, allowOverlappingZones: true));
                 if (!useful)
                     result.Issues.Add(Issue(ZoneIssueKind.EmptyZone, zone, "Зона не покрывает расчётный КЭ"));
+                if (openings != null && openings.Count > 0)
+                {
+                    var overlapWidthM = MaxOpeningOverlapWidthM(zone, openings);
+                    if (overlapWidthM > 0.05 + OpeningOverlapToleranceM)
+                        result.Issues.Add(Issue(ZoneIssueKind.OpeningIntersection, zone,
+                            $"Заход в отверстие по ширине {overlapWidthM * 1000:0.#} мм; " +
+                            "допустимо не более 50 мм"));
+                }
+                if (slabOutline != null && slabOutline.Count >= 3 &&
+                    ExtendsOutsideSlab(zone, slabOutline))
+                    result.Issues.Add(Issue(ZoneIssueKind.OutsideSlab, zone,
+                        "Контур зоны выходит за границу плиты"));
             }
 
+            var stepPairs = AddInterZoneStepIssues(zones, result,
+                Math.Max(0, settings.GridCellMm) / 1000.0);
             var index = BuildIndex(zones);
             for (var i = 0; i < zones.Count; i++)
             {
@@ -130,12 +154,190 @@ namespace LiraSlabZones.Core
                 foreach (var j in index.Query(bounds.MinX - padding, bounds.MaxX + padding,
                              bounds.MinY - padding, bounds.MaxY + padding).Where(j => j > i))
                 {
+                    if (stepPairs.Contains((i, j))) continue;
                     if (!ZoneEditor.HasPlacementConflict(zones[i], zones[j])) continue;
                     result.Issues.Add(Issue(ZoneIssueKind.PlacementConflict, zones[i],
                         $"Конфликт с зоной №{zones[j].ZoneId}"));
+                    result.Issues.Add(Issue(ZoneIssueKind.PlacementConflict, zones[j],
+                        $"Конфликт с зоной №{zones[i].ZoneId}"));
                 }
             }
             return result;
+        }
+
+        private static HashSet<(int First, int Second)> AddInterZoneStepIssues(
+            IList<AdditionalZone> zones, ZoneDiagnostics result, double mosaicCellM)
+        {
+            var pairs = new HashSet<(int First, int Second)>();
+            var groups = zones.Select((zone, index) => (Zone: zone, Index: index))
+                .Where(item => item.Zone.Contour != null && item.Zone.Contour.Count >= 3)
+                .GroupBy(item => (item.Zone.Layer, item.Zone.Direction));
+
+            foreach (var group in groups)
+            {
+                var zonesInGroup = group.ToList();
+                var axialCoordinates = zonesInGroup
+                    .SelectMany(item => item.Zone.Contour.Select(point =>
+                        group.Key.Direction == ZoneDirection.X ? point.X : point.Y))
+                    .Where(value => !double.IsNaN(value) && !double.IsInfinity(value))
+                    .OrderBy(value => value)
+                    .ToList();
+                var breakpoints = new List<double>();
+                foreach (var coordinate in axialCoordinates)
+                {
+                    if (breakpoints.Count == 0 ||
+                        coordinate - breakpoints[breakpoints.Count - 1] > 1e-9)
+                        breakpoints.Add(coordinate);
+                }
+
+                for (var slabIndex = 0; slabIndex + 1 < breakpoints.Count; slabIndex++)
+                {
+                    var slabMin = breakpoints[slabIndex];
+                    var slabMax = breakpoints[slabIndex + 1];
+                    var slabWidth = slabMax - slabMin;
+                    if (slabWidth <= 1e-9) continue;
+
+                    foreach (var fraction in new[] { 0.001, 0.5, 0.999 })
+                    {
+                        var axial = slabMin + slabWidth * fraction;
+                        var intervals = new List<(int ZoneIndex, double Min, double Max)>();
+                        foreach (var item in zonesInGroup)
+                        {
+                            foreach (var interval in CrossSectionIntervals(
+                                         item.Zone, group.Key.Direction, axial))
+                                intervals.Add((item.Index, interval.Min, interval.Max));
+                        }
+                        intervals = intervals.OrderBy(interval => interval.Min)
+                            .ThenBy(interval => interval.Max)
+                            .ThenBy(interval => interval.ZoneIndex)
+                            .ToList();
+
+                        for (var intervalIndex = 0; intervalIndex + 1 < intervals.Count;
+                             intervalIndex++)
+                        {
+                            var firstInterval = intervals[intervalIndex];
+                            var secondInterval = intervals[intervalIndex + 1];
+                            if (firstInterval.ZoneIndex == secondInterval.ZoneIndex) continue;
+
+                            var actualGapM = secondInterval.Min - firstInterval.Max;
+                            // Overlap is reported by placement-conflict diagnostics. Only
+                            // compare geometrically adjacent zones within one mesh cell.
+                            if (actualGapM < -1e-6) continue;
+
+                            var firstZone = zones[firstInterval.ZoneIndex];
+                            var secondZone = zones[secondInterval.ZoneIndex];
+                            var requiredGapM = Math.Min(firstZone.BarStepMm,
+                                secondZone.BarStepMm) / 1000.0;
+                            if (requiredGapM <= 0 ||
+                                actualGapM > requiredGapM + mosaicCellM + StepMatchToleranceM ||
+                                Math.Abs(actualGapM - requiredGapM) <= StepMatchToleranceM)
+                                continue;
+
+                            var pair = (Math.Min(firstInterval.ZoneIndex, secondInterval.ZoneIndex),
+                                Math.Max(firstInterval.ZoneIndex, secondInterval.ZoneIndex));
+                            if (!pairs.Add(pair)) continue;
+
+                            var message = $"Зазор {actualGapM * 1000:0.#} мм; требуется " +
+                                          $"{requiredGapM * 1000:0.#} мм до зоны №";
+                            result.Issues.Add(Issue(ZoneIssueKind.InterZoneStep, firstZone,
+                                message + secondZone.ZoneId, secondZone.ZoneId));
+                            result.Issues.Add(Issue(ZoneIssueKind.InterZoneStep, secondZone,
+                                message + firstZone.ZoneId, firstZone.ZoneId));
+                        }
+                    }
+                }
+            }
+
+            return pairs;
+        }
+
+        private static List<(double Min, double Max)> CrossSectionIntervals(
+            AdditionalZone zone, ZoneDirection direction, double axial)
+        {
+            var crossings = new List<double>();
+            for (var i = 0; i < zone.Contour.Count; i++)
+            {
+                var first = zone.Contour[i];
+                var second = zone.Contour[(i + 1) % zone.Contour.Count];
+                var firstAxial = direction == ZoneDirection.X ? first.X : first.Y;
+                var secondAxial = direction == ZoneDirection.X ? second.X : second.Y;
+                if (!((firstAxial <= axial && axial < secondAxial) ||
+                      (secondAxial <= axial && axial < firstAxial))) continue;
+
+                var firstCross = direction == ZoneDirection.X ? first.Y : first.X;
+                var secondCross = direction == ZoneDirection.X ? second.Y : second.X;
+                var ratio = (axial - firstAxial) / (secondAxial - firstAxial);
+                crossings.Add(firstCross + (secondCross - firstCross) * ratio);
+            }
+
+            crossings.Sort();
+            var intervals = new List<(double Min, double Max)>();
+            for (var i = 0; i + 1 < crossings.Count; i += 2)
+                if (crossings[i + 1] - crossings[i] > 1e-9)
+                    intervals.Add((crossings[i], crossings[i + 1]));
+            return intervals;
+        }
+
+        private static bool ExtendsOutsideSlab(AdditionalZone zone, IList<Point3> slabOutline)
+        {
+            if (zone.Contour == null || zone.Contour.Count < 3) return false;
+            var subject = new Paths64 { ToDiagnosticPath(zone.Contour) };
+            var outline = new Paths64 { ToDiagnosticPath(slabOutline) };
+            var outside = Clipper.Difference(subject, outline, FillRule.NonZero);
+            var outsideArea = outside.Sum(path => Math.Abs(Clipper.Area(path)));
+            var zoneArea = Math.Abs(Clipper.Area(subject[0]));
+            return outsideArea > Math.Max(10.0, zoneArea * 1e-8);
+        }
+
+        private static Path64 ToDiagnosticPath(IEnumerable<Point3> points) => new Path64(
+            points.Select(point => new Point64(
+                (long)Math.Round(point.X * DiagnosticGeometryScale),
+                (long)Math.Round(point.Y * DiagnosticGeometryScale))));
+
+        private static double MaxOpeningOverlapWidthM(
+            AdditionalZone zone, IList<OpeningInfo> openings)
+        {
+            if (zone.Contour == null || zone.Contour.Count < 3) return 0;
+
+            var maxOverlapWidthM = 0.0;
+            var zoneBounds = Bounds(zone);
+            var zonePath = ToDiagnosticPath(zone.Contour);
+            foreach (var opening in openings)
+            {
+                var minX = Math.Min(opening.MinXM, opening.MaxXM);
+                var maxX = Math.Max(opening.MinXM, opening.MaxXM);
+                var minY = Math.Min(opening.MinYM, opening.MaxYM);
+                var maxY = Math.Max(opening.MinYM, opening.MaxYM);
+                if (maxX - minX <= 1e-9 || maxY - minY <= 1e-9) continue;
+                if (zoneBounds.MaxX < minX - 1e-9 || zoneBounds.MinX > maxX + 1e-9 ||
+                    zoneBounds.MaxY < minY - 1e-9 || zoneBounds.MinY > maxY + 1e-9)
+                    continue;
+
+                var openingPath = new Path64
+                {
+                    new Point64((long)Math.Round(minX * DiagnosticGeometryScale),
+                        (long)Math.Round(minY * DiagnosticGeometryScale)),
+                    new Point64((long)Math.Round(maxX * DiagnosticGeometryScale),
+                        (long)Math.Round(minY * DiagnosticGeometryScale)),
+                    new Point64((long)Math.Round(maxX * DiagnosticGeometryScale),
+                        (long)Math.Round(maxY * DiagnosticGeometryScale)),
+                    new Point64((long)Math.Round(minX * DiagnosticGeometryScale),
+                        (long)Math.Round(maxY * DiagnosticGeometryScale))
+                };
+                var intersection = Clipper.Intersect(
+                    new Paths64 { new Path64(zonePath) },
+                    new Paths64 { openingPath }, FillRule.NonZero);
+                foreach (var path in intersection)
+                {
+                    if (path.Count < 3 || Math.Abs(Clipper.Area(path)) <= 0.5) continue;
+                    var overlapWidth = zone.Direction == ZoneDirection.X
+                        ? path.Max(point => point.Y) - path.Min(point => point.Y)
+                        : path.Max(point => point.X) - path.Min(point => point.X);
+                    maxOverlapWidthM = Math.Max(maxOverlapWidthM,
+                        overlapWidth / DiagnosticGeometryScale);
+                }
+            }
+            return maxOverlapWidthM;
         }
 
         public static ZoneDiagnostics Evaluate(
@@ -154,8 +356,15 @@ namespace LiraSlabZones.Core
             return index;
         }
 
-        private static ZoneIssue Issue(ZoneIssueKind kind, AdditionalZone zone, string message) =>
-            new ZoneIssue { Kind = kind, Layer = zone.Layer, ZoneId = zone.ZoneId, Message = message ?? string.Empty };
+        private static ZoneIssue Issue(ZoneIssueKind kind, AdditionalZone zone, string message,
+            int relatedZoneId = 0) => new ZoneIssue
+        {
+            Kind = kind,
+            Layer = zone.Layer,
+            ZoneId = zone.ZoneId,
+            RelatedZoneId = relatedZoneId,
+            Message = message ?? string.Empty
+        };
 
         private static bool Covers(AdditionalZone zone, Point3 point) => zone.Contour.Count >= 3 &&
             point.X >= zone.Contour.Min(p => p.X) - 1e-6 && point.X <= zone.Contour.Max(p => p.X) + 1e-6 &&
@@ -177,6 +386,7 @@ namespace LiraSlabZones.Core
     public static class ZoneCoverageRules
     {
         private const double GeometryScale = 1000000.0;
+        private const double OpeningCoverageAllowanceMm = 100;
         private sealed class CachedFootprint
         {
             public IList<Point3>? Contour;
@@ -308,6 +518,13 @@ namespace LiraSlabZones.Core
         public static bool CoversOrBridgesGap(
             IList<AdditionalZone> zones, LiraPlateElement plate, RebarLayer layer,
             double requiredAs, IList<Point3>? slabOutline, IList<OpeningInfo>? openings)
+            => CoversOrBridgesGap(zones, plate, layer, requiredAs, slabOutline, openings,
+                allowOverlappingZones: false);
+
+        public static bool CoversOrBridgesGap(
+            IList<AdditionalZone> zones, LiraPlateElement plate, RebarLayer layer,
+            double requiredAs, IList<Point3>? slabOutline, IList<OpeningInfo>? openings,
+            bool allowOverlappingZones)
         {
             var footprint = GetFootprint(plate, slabOutline);
             if (footprint.UsePointFallback)
@@ -354,11 +571,14 @@ namespace LiraSlabZones.Core
                         openingBuffers.AddRange(ClonePaths(GetZoneOpeningBuffers(zone, openings)));
                 }
 
-                combinedZonePaths = zonePaths;
-                combinedOpeningBuffers = openingBuffers;
+                var hasPositiveAreaOverlap = HasPositiveAreaOverlap(nearby);
+                var canUseCombinedCoverage = allowOverlappingZones || !hasPositiveAreaOverlap;
+                combinedZonePaths = canUseCombinedCoverage ? zonePaths : null;
+                combinedOpeningBuffers = canUseCombinedCoverage ? openingBuffers : null;
                 var combinedCoverage = Clipper.Union(zonePaths, FillRule.NonZero);
-                if (ContainsFootprint(footprint.Paths, combinedCoverage) ||
-                    ContainsFootprintNearOpening(footprint, combinedCoverage, openingBuffers))
+                if (canUseCombinedCoverage &&
+                    (ContainsFootprint(footprint.Paths, combinedCoverage) ||
+                     ContainsFootprintNearOpening(footprint, combinedCoverage, openingBuffers)))
                     return true;
             }
 
@@ -379,7 +599,8 @@ namespace LiraSlabZones.Core
                     Math.Min(a.MinY, b.MinY) > footprint.Bounds.MaxY + 1e-6)
                     continue;
 
-                if (ZonesTouchOrOverlap(first, second))
+                if (ZonesTouchOrOverlap(first, second) &&
+                    (allowOverlappingZones || !ZonesHavePositiveAreaOverlap(first, second)))
                 {
                     var pairCoverage = Clipper.Union(
                         new Paths64 { ToPath(first.Contour), ToPath(second.Contour) }, FillRule.NonZero);
@@ -565,6 +786,22 @@ namespace LiraSlabZones.Core
                    (overlapX > 1e-6 || overlapY > 1e-6);
         }
 
+        private static bool HasPositiveAreaOverlap(IList<AdditionalZone> zones)
+        {
+            for (var i = 0; i < zones.Count; i++)
+            for (var j = i + 1; j < zones.Count; j++)
+                if (ZonesHavePositiveAreaOverlap(zones[i], zones[j])) return true;
+            return false;
+        }
+
+        private static bool ZonesHavePositiveAreaOverlap(AdditionalZone first, AdditionalZone second)
+        {
+            var overlap = Clipper.Intersect(
+                new Paths64 { ToPath(first.Contour) },
+                new Paths64 { ToPath(second.Contour) }, FillRule.NonZero);
+            return overlap.Sum(path => Math.Abs(Clipper.Area(path))) > 0.5;
+        }
+
         private static bool ContainsFootprintNearOpening(
             CachedFootprint footprint, Paths64 coverage, Paths64 qualifyingBuffers)
         {
@@ -609,10 +846,11 @@ namespace LiraSlabZones.Core
                 var zonePath = ToPath(zone.Contour);
                 foreach (var opening in openings)
                 {
-                    var openingMinX = Math.Min(opening.MinXM, opening.MaxXM) - 0.05001;
-                    var openingMaxX = Math.Max(opening.MinXM, opening.MaxXM) + 0.05001;
-                    var openingMinY = Math.Min(opening.MinYM, opening.MaxYM) - 0.05001;
-                    var openingMaxY = Math.Max(opening.MinYM, opening.MaxYM) + 0.05001;
+                    var allowanceM = OpeningCoverageAllowanceMm / 1000.0 + 0.00001;
+                    var openingMinX = Math.Min(opening.MinXM, opening.MaxXM) - allowanceM;
+                    var openingMaxX = Math.Max(opening.MinXM, opening.MaxXM) + allowanceM;
+                    var openingMinY = Math.Min(opening.MinYM, opening.MaxYM) - allowanceM;
+                    var openingMaxY = Math.Max(opening.MinYM, opening.MaxYM) + allowanceM;
                     if (zoneBounds.MaxX < openingMinX || zoneBounds.MinX > openingMaxX ||
                         zoneBounds.MaxY < openingMinY || zoneBounds.MinY > openingMaxY)
                         continue;
@@ -691,7 +929,8 @@ namespace LiraSlabZones.Core
                 }
                 cached.Paths = Clipper.InflatePaths(
                     new Paths64 { RectanglePath(minX, maxX, minY, maxY) },
-                    50010, JoinType.Round, EndType.Polygon, 2.0, 0.0);
+                    (long)Math.Round(OpeningCoverageAllowanceMm * GeometryScale / 1000.0) + 10,
+                    JoinType.Round, EndType.Polygon, 2.0, 0.0);
                 return cached.Paths;
             }
         }

@@ -31,6 +31,23 @@
       <Setter Property="BorderThickness" Value="0"/>
       <Setter Property="Cursor" Value="Hand"/>
     </Style>
+    <Style TargetType="ToggleButton" x:Key="BoundaryRulesToggleBtn">
+      <Setter Property="Padding" Value="10,6"/>
+      <Setter Property="Margin" Value="0,0,0,6"/>
+      <Setter Property="Background" Value="#E5E7EB"/>
+      <Setter Property="Foreground" Value="#111827"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="BorderBrush" Value="#D1D5DB"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Style.Triggers>
+        <Trigger Property="IsChecked" Value="True">
+          <Setter Property="Background" Value="#047857"/>
+          <Setter Property="Foreground" Value="White"/>
+          <Setter Property="BorderBrush" Value="#047857"/>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
     <Style TargetType="TextBox">
       <Setter Property="Padding" Value="4,2"/>
       <Setter Property="Margin" Value="0,0,0,4"/>
@@ -267,6 +284,12 @@
           <StackPanel>
             <Button x:Name="BtnBoundaryEditor" Content="Границы и отверстия…"
                     Style="{StaticResource SecondaryBtn}" Click="BtnBoundaryEditor_Click" IsEnabled="False"/>
+            <ToggleButton x:Name="BtnApplyBoundaryRules" Style="{StaticResource BoundaryRulesToggleBtn}"
+                          Checked="BtnApplyBoundaryRules_Checked"
+                          Unchecked="BtnApplyBoundaryRules_Unchecked"
+                          ToolTip="Включить или отключить обработку внешнего контура и отверстий">
+              <TextBlock x:Name="TxtBoundaryRulesToggle" Text="Учитывать границу и отверстия" TextWrapping="Wrap"/>
+            </ToggleButton>
             <Button Content="Пересчитать пятна" Style="{StaticResource PrimaryBtn}" Click="BtnRebuild_Click"/>
             <Button x:Name="BtnSaveJson" Content="Сохранить JSON зон…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveJson_Click"/>
             <Button Content="Сохранить JSON всех плит…" Style="{StaticResource SecondaryBtn}" Click="BtnSaveAllPlatesJson_Click"/>
@@ -341,6 +364,51 @@
       <GroupBox Header="ТЭПы / статистика" DockPanel.Dock="Top">
         <StackPanel>
           <TextBlock x:Name="TxtStats" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/>
+          <TextBlock Text="Диагностика зон" Margin="0,7,0,2" FontSize="10" Foreground="#6B7280"/>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#DC143C" Margin="0,0,4,0"/>
+              <TextBlock Text="Ошибка геометрии" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#C71585" Margin="0,0,4,0"/>
+              <TextBlock Text="Нет покрытия КЭ" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#9370DB" Margin="0,0,4,0"/>
+              <TextBlock Text="Длина >11700 мм" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#008B8B" Margin="0,0,4,0"/>
+              <TextBlock Text="Нарушен шаг" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#FF4500" Margin="0,0,4,0"/>
+              <TextBlock Text="Пересечение отверстия" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#4169E1" Margin="0,0,4,0"/>
+              <TextBlock Text="Выход за плиту" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="3" Grid.Column="0" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#FF8C00" Margin="0,0,4,0"/>
+              <TextBlock Text="Конфликт зон" FontSize="10"/>
+            </StackPanel>
+            <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,1">
+              <Border Width="9" Height="9" Background="#DAA520" Margin="0,0,4,0"/>
+              <TextBlock Text="Предупреждение" FontSize="10"/>
+            </StackPanel>
+          </Grid>
         </StackPanel>
       </GroupBox>
       <GroupBox Header="Журнал" DockPanel.Dock="Bottom" Height="160">

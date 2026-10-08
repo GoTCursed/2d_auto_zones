@@ -241,6 +241,24 @@ namespace LiraSlabZones.Core
             return result;
         }
 
+        public static ZonePatchNeighborLayoutResult ResolveContainedOverlaps(
+            IList<AdditionalZone> zones,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds> supportBoundsByZone,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds> patchBoundsByZone,
+            IList<LiraPlateElement> plates,
+            AnalysisSettings settings,
+            IList<Point3>? slabOutline,
+            IList<OpeningInfo>? openings)
+        {
+            var result = new ZonePatchNeighborLayoutResult();
+            if (zones == null || zones.Count < 2 || plates == null || settings == null)
+                return result;
+
+            ResolveContainedZoneOverlaps(zones, supportBoundsByZone, patchBoundsByZone,
+                plates, settings, slabOutline, openings, result);
+            return result;
+        }
+
         private static bool TryRearrangeCurrentConflictComponents(
             IList<Entry> entries,
             IList<CoveredElement> coveredElements,

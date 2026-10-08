@@ -4857,6 +4857,7 @@ namespace LiraSlabZones.Core
                 CoverTopMm = settings.CoverTopMm,
                 CoverBottomMm = settings.CoverBottomMm,
                 MaxDiameterMm = settings.MaxDiameterMm,
+                ApplySlabBoundaryAndOpeningRules = settings.ApplySlabBoundaryAndOpeningRules,
                 ApplyHoleRules = settings.ApplyHoleRules,
                 ApplyBentRules = settings.ApplyBentRules,
                 HoleIgnorePerpMm = settings.HoleIgnorePerpMm,

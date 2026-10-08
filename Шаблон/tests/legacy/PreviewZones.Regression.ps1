@@ -140,12 +140,12 @@ Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
 Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
         $holeZoneList, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
     'A plate edge 50 mm from an opening was reported uncovered.'
-$over50Zone = New-RectZone 1.0502 1.4 0.3 0.7 200 5
-$over50Zones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
-$over50Zones.Add($over50Zone)
+$over100Zone = New-RectZone 1.1002 1.4 0.3 0.7 200 5
+$over100Zones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$over100Zones.Add($over100Zone)
 Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
-        $over50Zones, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
-    'The opening allowance accepted a zone more than 50 mm away.'
+        $over100Zones, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
+    'The opening allowance accepted a zone more than 100 mm away.'
 $shortHoleZone = New-RectZone 1.05 1.35 0.3 0.7 200 5
 $shortHoleZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
 $shortHoleZones.Add($shortHoleZone)
@@ -158,7 +158,7 @@ $emptyNearHoleZones.Add($emptyNearHoleZone)
 Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
         $emptyNearHoleZones, $holePlate, [LiraSlabZones.Core.RebarLayer]::As2, 4, $holeOutline, $holes)) `
     'A nearby zone with no actual overlap was allowed to cover an FE.'
-Write-Host 'PASS 50 mm opening allowance covers only the FE portion beside a real opening'
+Write-Host 'PASS 100 mm opening allowance covers only the FE portion beside a real opening'
 
 $splitSource = [LiraSlabZones.Core.AdditionalZone]::new()
 $splitSource.Layer = [LiraSlabZones.Core.RebarLayer]::As2
@@ -590,7 +590,60 @@ Assert ($holePieces.Count -eq 4) 'Opening must split a crossing zone into four n
 Assert (($holePieces | Where-Object FamilyKind -eq ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Unaffected bar lanes must remain straight.'
 Assert (($holePieces | Where-Object FamilyKind -ne ([LiraSlabZones.Core.ZoneFamilyKind]::Straight)).Count -eq 2) 'Bars ending at the opening must use bent families.'
 Assert (($holePieces | Where-Object { [LiraSlabZones.Core.ZoneEditor]::IntersectsOpening($_, $detectedHoles) }).Count -eq 0) 'A split piece still crosses the opening.'
+[LiraSlabZones.Core.ZoneEditor]::NormalizeBarArrayWidthsToStep($holePieces)
+Assert (($holePieces | Where-Object { [Math]::Abs($_.WidthMm / $_.BarStepMm - [Math]::Round($_.WidthMm / $_.BarStepMm)) -gt 0.000001 }).Count -eq 0) `
+    'A cut zone width was not normalized to a whole spacing module.'
 Write-Host 'PASS opening splits bent end pieces and straight bypass pieces'
+
+$insideOpening = [LiraSlabZones.Core.ZoneEditor]::Create(
+    $editTemplate, 2.25, 3.75, 2.25, 3.75, $holeOutline)
+Assert ([LiraSlabZones.Core.ZoneEditor]::IsFullyInsideOpening($insideOpening, $detectedHoles)) `
+    'A zone strictly inside an opening was not recognized.'
+Assert (([LiraSlabZones.Core.ZoneEditor]::SplitAtOpenings(
+    $insideOpening, $detectedHoles, $openingSettings)).Count -eq 0) `
+    'A zone strictly inside an opening must be removed by the cut.'
+Write-Host 'PASS zones fully inside openings are identified and clipped away'
+
+$oppositeRowSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$oppositeRowSettings.SlabThicknessMm = 222
+$oppositeRowSettings.CoverTopMm = 25
+$oppositeRowSettings.CoverBottomMm = 25
+$oppositeRowSettings.BgTopDiameterMm = 12
+$oppositeRowSettings.BgBottomDiameterMm = 20
+$as1Vertical = [LiraSlabZones.Core.HoleBentRules]::VerticalLegAvailableMm(
+    $oppositeRowSettings, [LiraSlabZones.Core.RebarLayer]::As1, 36)
+$as3Vertical = [LiraSlabZones.Core.HoleBentRules]::VerticalLegAvailableMm(
+    $oppositeRowSettings, [LiraSlabZones.Core.RebarLayer]::As3, 36)
+Assert ([Math]::Abs($as1Vertical - 160) -lt 0.001) 'As1 must use the opposite top-row diameter.'
+Assert ([Math]::Abs($as3Vertical - 152) -lt 0.001) 'As3 must use the opposite bottom-row diameter.'
+Assert (([LiraSlabZones.Core.HoleBentRules]::ChooseBentFamily($as1Vertical, 16)) -eq
+    [LiraSlabZones.Core.ZoneFamilyKind]::PEqual) 'The Legacy family threshold for As1 was not applied.'
+Assert (([LiraSlabZones.Core.HoleBentRules]::ChooseBentFamily($as3Vertical, 16)) -eq
+    [LiraSlabZones.Core.ZoneFamilyKind]::L) 'The Legacy family threshold for As3 was not applied.'
+Write-Host 'PASS bent family clearance uses the opposite background row'
+
+$allowanceOpening = [LiraSlabZones.Core.OpeningInfo]::new()
+$allowanceOpening.MinXM = 1.1
+$allowanceOpening.MaxXM = 1.8
+$allowanceOpening.MinYM = 0.2
+$allowanceOpening.MaxYM = 0.8
+$allowanceOpenings = [Collections.Generic.List[LiraSlabZones.Core.OpeningInfo]]::new()
+$allowanceOpenings.Add($allowanceOpening)
+$nearOpeningZone = New-RectZone 0.5 1.0 0.2 0.8 100 5
+$nearOpeningPlate = New-ContourPlate 800 0.5 1.08 0.2 0.8
+$nearOpeningZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$nearOpeningZones.Add($nearOpeningZone)
+Assert ([LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+    $nearOpeningZones, $nearOpeningPlate, [LiraSlabZones.Core.RebarLayer]::As2,
+    5, $null, $allowanceOpenings)) 'A required FE within 100 mm of an opening was not treated as covered.'
+$allowanceOpening.MinXM = 1.3
+$farOpeningZone = New-RectZone 0.5 1.0 0.2 0.8 100 5
+$farOpeningZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$farOpeningZones.Add($farOpeningZone)
+Assert (-not [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+    $farOpeningZones, $nearOpeningPlate, [LiraSlabZones.Core.RebarLayer]::As2,
+    5, $null, $allowanceOpenings)) 'An FE more than 100 mm from an opening was incorrectly treated as covered.'
+Write-Host 'PASS opening coverage allowance is limited to 100 mm'
 
 # При реверсе направление для правил отверстия определяется по слою, даже если
 # зона была загружена со старым (нереверсивным) значением Direction.
@@ -765,7 +818,9 @@ function Assert-PolygonApproximation([string]$name, $plates, $settings, $outline
     Write-Host "PASS $name`: $($plates.Count) polygon FE -> 1 rectangle, $($zone.WidthMm)x$($zone.LengthMm) mm"
 }
 
-$demo = [LiraSlabZones.Core.DemoSlabFactory]::Create($null)
+$legacyDemoSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$legacyDemoSettings.PlacementMode = 'LegacyZones'
+$demo = [LiraSlabZones.Core.DemoSlabFactory]::Create($legacyDemoSettings)
 $expected = $demo.Zones.Count
 Assert ($expected -gt 0) 'Demo has no zones.'
 
@@ -782,6 +837,7 @@ Write-Host "PASS legacy contour: $expected zones"
 # Аппроксимация пятна: три активных КЭ 400x400 мм образуют букву "Г".
 # Ожидается один охватывающий прямоугольник, а не три зоны по одному КЭ.
 $approxSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$approxSettings.PlacementMode = 'LegacyZones'
 $approxSettings.ShowAs1 = $false
 $approxSettings.ShowAs2 = $false
 $approxSettings.ShowAs3 = $true
@@ -1004,8 +1060,13 @@ foreach ($xy in @(@(0,0), @(4,0), @(4,2), @(3.8,2.8), @(3.3,3.5), @(2.5,4), @(0,
 $roundedPlate = New-PolygonPlate 302 @(@(3.05,2.75), @(3.45,2.75), @(3.45,3.15), @(3.05,3.15)) $activeAs3
 $roundedPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
 $roundedPlates.Add($roundedPlate)
+$roundedSettings = [Newtonsoft.Json.JsonConvert]::DeserializeObject(
+    [Newtonsoft.Json.JsonConvert]::SerializeObject($approxSettings),
+    [LiraSlabZones.Core.AnalysisSettings])
+$roundedSettings.ApplySlabBoundaryAndOpeningRules = $true
+$roundedSettings.ApplyBentRules = $true
 $roundedZones = [LiraSlabZones.Core.ZoneLayoutEngine]::Layout(
-    $roundedPlates, $approxSettings, $null, $roundedOutline, $null)
+    $roundedPlates, $roundedSettings, $null, $roundedOutline, $null)
 Assert ($roundedZones.Count -gt 0) 'Rounded edge removed the required zone.'
 Assert (($roundedZones | Where-Object { $_.FamilyKind -ne [LiraSlabZones.Core.ZoneFamilyKind]::Straight }).Count -gt 0) `
     'Rounded local edge was not assigned a bent family.'
@@ -1109,7 +1170,7 @@ Write-Host 'PASS compatible aligned zones: 3 zones -> 1'
 
 $tempJson = Join-Path ([IO.Path]::GetTempPath()) ('slab-regression-' + [guid]::NewGuid() + '.json')
 try {
-    $upper = [LiraSlabZones.Core.DemoSlabFactory]::Create($null)
+    $upper = [LiraSlabZones.Core.DemoSlabFactory]::Create($legacyDemoSettings)
     foreach ($plate in $upper.Plates) {
         $plate.Centroid.Z += 3
         foreach ($point in $plate.Contour) { $point.Z = 6 }

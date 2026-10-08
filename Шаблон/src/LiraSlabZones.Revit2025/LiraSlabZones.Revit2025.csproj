@@ -21,7 +21,7 @@
     <ProjectReference Include="..\LiraSlabZones.Core\LiraSlabZones.Core.csproj" />
     <Compile Include="..\LiraSlabZones.Revit2023\*.cs" Link="%(Filename)%(Extension)" />
     <Compile Include="..\LiraSlabZones.Revit2023\UI\*.cs" Link="UI\%(Filename)%(Extension)" />
-    <Page Include="..\LiraSlabZones.Revit2023\UI\ZonePreviewWindow.xaml" Link="UI\ZonePreviewWindow.xaml" />
+    <Page Include="..\LiraSlabZones.Revit2023\UI\*.xaml" Link="UI\%(Filename)%(Extension)" />
     <None Include="..\..\DefaultSettings.cfg" Link="DefaultSettings.cfg" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

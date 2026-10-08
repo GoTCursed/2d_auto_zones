@@ -435,7 +435,9 @@ namespace LiraSlabZones.Revit2023.UI
                         dc.DrawGeometry(PatchFill(fill.Level), null, fill.Shape.Geometry);
                 }
 
-                DrawPatchZoneOutlines(dc, s, vMinX, vMaxX, vMinY, vMaxY);
+                var patchZoneDiagnostics = GetDiagnosticZoneBrushes();
+                DrawPatchZoneOutlines(dc, s, vMinX, vMaxX, vMinY, vMaxY,
+                    patchZoneDiagnostics);
 
                 if (_showPatchBoundaries)
                 {
@@ -479,10 +481,6 @@ namespace LiraSlabZones.Revit2023.UI
             var diagnostics = _result.Diagnostics ?? new ZoneDiagnostics();
             bool showUncovered = _diagnosticFilter == DiagnosticFilter.All ||
                 _diagnosticFilter == DiagnosticFilter.Uncovered;
-            bool showZoneErrors = _diagnosticFilter == DiagnosticFilter.All ||
-                _diagnosticFilter == DiagnosticFilter.ZoneErrors;
-            bool showConflicts = _diagnosticFilter == DiagnosticFilter.All ||
-                _diagnosticFilter == DiagnosticFilter.Conflicts;
             var uncoveredIds = new HashSet<int>(diagnostics.Issues
                 .Where(issue => showUncovered && issue.Kind == ZoneIssueKind.UncoveredElement)
                 .Select(issue => issue.ElementId));
@@ -497,14 +495,7 @@ namespace LiraSlabZones.Revit2023.UI
                         dc.DrawGeometry(issueFill, issuePen, _plateShapes[i].Geometry);
             }
 
-            var errorZoneIds = new HashSet<int>(diagnostics.Issues
-                .Where(issue => showZoneErrors && (issue.Kind == ZoneIssueKind.EmptyZone ||
-                                issue.Kind == ZoneIssueKind.InvalidZone ||
-                                issue.Kind == ZoneIssueKind.OverlongBar))
-                .Select(issue => issue.ZoneId));
-            var conflictZoneIds = new HashSet<int>(diagnostics.Issues
-                .Where(issue => showConflicts && issue.Kind == ZoneIssueKind.PlacementConflict)
-                .Select(issue => issue.ZoneId));
+            var diagnosticZoneBrushes = GetDiagnosticZoneBrushes();
             drawn = 0;
             bool labels = _zoom >= 1.6;
             bool dims = _zoom >= 1.5;
@@ -521,11 +512,19 @@ namespace LiraSlabZones.Revit2023.UI
 
                 var fill = DiameterFill(zone.DiameterMm, 70);
                 bool selected = _selectedZoneId == zone.ZoneId;
-                var diagnosticStroke = errorZoneIds.Contains(zone.ZoneId) ? Brushes.Red :
-                    conflictZoneIds.Contains(zone.ZoneId) ? Brushes.DarkOrange : DiameterStroke(zone.DiameterMm);
+                var statusStroke = ZoneAttentionBrush(zone);
+                var hasDiagnostic = diagnosticZoneBrushes.TryGetValue(zone.ZoneId, out var diagnosticStroke);
+                diagnosticStroke ??= statusStroke ?? DiameterStroke(zone.DiameterMm);
+                bool hasAttention = statusStroke != null || hasDiagnostic;
+                if (selected && hasAttention)
+                {
+                    var selectionHalo = new Pen(Brushes.White, Math.Max(1e-4, 4.2 / s));
+                    selectionHalo.Freeze();
+                    dc.DrawGeometry(null, selectionHalo, shape.Geometry);
+                }
                 var zoneOutline = new Pen(
-                    selected ? Brushes.Black : diagnosticStroke,
-                    Math.Max(1e-4, (selected ? 2.2 : 1.35) / s))
+                    selected && !hasAttention ? Brushes.Black : diagnosticStroke,
+                    Math.Max(1e-4, (selected || hasAttention ? 2.4 : 1.35) / s))
                 {
                     DashStyle = DashStyles.Dash
                 };
@@ -1241,9 +1240,8 @@ namespace LiraSlabZones.Revit2023.UI
             }
             AssignZoneIds(zones);
             if (_result.PatchPreviewOnly) RefreshPatchFrameZones();
-            else _result.Diagnostics = ZoneLayoutDiagnostics.Evaluate(
-                _result.Plates, zones, _settings, 0, true, _result.Outline, _result.Openings);
             if (_result.PatchPreviewOnly) _result.Zones = zones.ToList();
+            RefreshDiagnostics();
             RebuildZoneGeometryCache();
             _selectedZoneId = keepSelected?.ZoneId;
             if (keepSelected != null) ZoneSelected?.Invoke(keepSelected);
@@ -1279,6 +1277,7 @@ namespace LiraSlabZones.Revit2023.UI
                     RebuildPatchGeometryCache();
             }
             RebuildZoneGeometryCache();
+            RefreshDiagnostics();
         }
 
         private void RebuildPatchGeometryCache()
@@ -1357,6 +1356,10 @@ namespace LiraSlabZones.Revit2023.UI
                             relatedPatches.Min(patch => patch.MinXM), relatedPatches.Max(patch => patch.MaxXM),
                             relatedPatches.Min(patch => patch.MinYM), relatedPatches.Max(patch => patch.MaxYM));
                 }
+
+                ZonePatchNeighborLayout.ResolveContainedOverlaps(
+                    _patchCandidateZones, patchSourceBounds, patchOuterBounds,
+                    _result.Plates, _settings, _result.Outline, _result.Openings);
             }
             foreach (var frame in frames)
             {
@@ -1443,6 +1446,34 @@ namespace LiraSlabZones.Revit2023.UI
                             ? neighborLayout.Warning
                             : zone.Comment + "; " + neighborLayout.Warning;
                     }
+                }
+                if (_settings.ApplySlabBoundaryAndOpeningRules)
+                {
+                    for (var i = _patchCandidateZones.Count - 1; i >= 0; i--)
+                    {
+                        var zone = _patchCandidateZones[i];
+                        var parts = ZoneEditor.SplitAtOpenings(
+                            zone, _result.Openings, _settings, _result.Plates);
+                        if (parts.Count == 1 && ReferenceEquals(parts[0], zone)) continue;
+                        if (parts.Count == 0)
+                        {
+                            _patchCandidateZones.RemoveAt(i);
+                            continue;
+                        }
+                        _patchCandidateZones.RemoveAt(i);
+                        _patchCandidateZones.InsertRange(i, parts);
+                    }
+                    ZoneLayoutEngine.ApplyBoundaryFamilies(
+                        _patchCandidateZones, _settings, _result.Outline);
+                    ZoneEditor.EnforceMaximumDetailLength(
+                        _patchCandidateZones, _result.Plates,
+                        _result.Outline ?? new List<Point3>(), 11700,
+                        allowBoundaryCornerOverrun: true);
+                    if (_result.Outline != null && _result.Outline.Count >= 3)
+                        ZoneEditor.ApplyOuterBoundaryCuts(_patchCandidateZones,
+                            _result.Plates, _result.Outline, _settings.EdgeOffsetMm);
+                    ZoneLayoutEngine.ApplyBoundaryFamilies(
+                        _patchCandidateZones, _settings, _result.Outline);
                 }
             }
             AssignZoneIds(_patchCandidateZones);
@@ -1543,11 +1574,14 @@ namespace LiraSlabZones.Revit2023.UI
         }
 
         private void DrawPatchZoneOutlines(
-            DrawingContext dc, double scale, double minX, double maxX, double minY, double maxY)
+            DrawingContext dc, double scale, double minX, double maxX, double minY, double maxY,
+            IReadOnlyDictionary<int, Brush> diagnosticBrushes)
         {
             foreach (var shape in _drawPatchZones)
             {
                 if (!shape.Intersects(minX, maxX, minY, maxY)) continue;
+                diagnosticBrushes.TryGetValue(shape.Zone.ZoneId, out var attention);
+                attention ??= ZoneAttentionBrush(shape.Zone);
                 if (shape.Zone.ZoneId == _selectedZoneId)
                 {
                     var selectionPen = new Pen(Brushes.White, Math.Max(1e-4, 5.0 / scale))
@@ -1557,12 +1591,92 @@ namespace LiraSlabZones.Revit2023.UI
                     selectionPen.Freeze();
                     dc.DrawGeometry(null, selectionPen, shape.Geometry);
                 }
-                var warning = shape.Zone.StatusColor == "warn";
-                var outline = new Pen(warning ? Brushes.DarkOrange : DiameterStroke(shape.Zone.DiameterMm),
-                    Math.Max(1e-4, 2.0 / scale));
+                var outline = new Pen(attention ?? DiameterStroke(shape.Zone.DiameterMm),
+                    Math.Max(1e-4, attention != null ? 2.8 / scale : 2.0 / scale));
                 outline.Freeze();
                 dc.DrawGeometry(DiameterFill(shape.Zone.DiameterMm, 32), outline, shape.Geometry);
             }
+        }
+
+        private Dictionary<int, Brush> GetDiagnosticZoneBrushes()
+        {
+            var diagnostics = _result?.Diagnostics ?? new ZoneDiagnostics();
+            var showZoneErrors = _diagnosticFilter == DiagnosticFilter.All ||
+                                 _diagnosticFilter == DiagnosticFilter.ZoneErrors;
+            var showConflicts = _diagnosticFilter == DiagnosticFilter.All ||
+                                _diagnosticFilter == DiagnosticFilter.Conflicts;
+            var brushes = new Dictionary<int, Brush>();
+            var priorities = new Dictionary<int, int>();
+            foreach (var issue in diagnostics.Issues)
+            {
+                var isConflict = issue.Kind == ZoneIssueKind.PlacementConflict;
+                var isStep = issue.Kind == ZoneIssueKind.InterZoneStep;
+                if ((isConflict && !showConflicts) ||
+                    (!isConflict && !isStep && !showZoneErrors) ||
+                    (isStep && !showZoneErrors && !showConflicts))
+                    continue;
+                if (isStep && issue.RelatedZoneId > 0 && IsSamePatchFrame(
+                        issue.ZoneId, issue.RelatedZoneId))
+                    continue;
+
+                var brush = DiagnosticBrush(issue.Kind);
+                if (brush == null) continue;
+                var priority = DiagnosticPriority(issue.Kind);
+                if (priorities.TryGetValue(issue.ZoneId, out var current) && current <= priority)
+                    continue;
+                priorities[issue.ZoneId] = priority;
+                brushes[issue.ZoneId] = brush;
+            }
+            return brushes;
+        }
+
+        private bool IsSamePatchFrame(int firstZoneId, int secondZoneId) =>
+            _result?.PatchPreviewOnly == true && firstZoneId != secondZoneId &&
+            _drawPatchFrames.Any(frame =>
+                frame.Zones.Any(zone => zone.ZoneId == firstZoneId) &&
+                frame.Zones.Any(zone => zone.ZoneId == secondZoneId));
+
+        private void RefreshDiagnostics()
+        {
+            if (_result == null) return;
+            var diagnostics = ZoneLayoutDiagnostics.Evaluate(
+                _result.Plates, WorkingZones, _settings, 0, true,
+                _result.Outline, _result.Openings);
+            if (_result.PatchPreviewOnly)
+                diagnostics.Issues.RemoveAll(issue => issue.Kind == ZoneIssueKind.InterZoneStep &&
+                    issue.RelatedZoneId > 0 && IsSamePatchFrame(issue.ZoneId, issue.RelatedZoneId));
+            _result.Diagnostics = diagnostics;
+        }
+
+        private static int DiagnosticPriority(ZoneIssueKind kind) => kind switch
+        {
+            ZoneIssueKind.InvalidZone => 0,
+            ZoneIssueKind.EmptyZone => 1,
+            ZoneIssueKind.OverlongBar => 2,
+            ZoneIssueKind.OpeningIntersection => 3,
+            ZoneIssueKind.OutsideSlab => 4,
+            ZoneIssueKind.InterZoneStep => 5,
+            ZoneIssueKind.PlacementConflict => 6,
+            _ => int.MaxValue
+        };
+
+        private static Brush? DiagnosticBrush(ZoneIssueKind kind) => kind switch
+        {
+            ZoneIssueKind.InvalidZone => Brushes.Crimson,
+            ZoneIssueKind.EmptyZone => Brushes.MediumVioletRed,
+            ZoneIssueKind.OverlongBar => Brushes.MediumPurple,
+            ZoneIssueKind.InterZoneStep => Brushes.DarkCyan,
+            ZoneIssueKind.OpeningIntersection => Brushes.OrangeRed,
+            ZoneIssueKind.OutsideSlab => Brushes.RoyalBlue,
+            ZoneIssueKind.PlacementConflict => Brushes.DarkOrange,
+            _ => null
+        };
+
+        private static Brush? ZoneAttentionBrush(AdditionalZone zone)
+        {
+            if (!zone.IsValid || zone.StatusColor == "error") return Brushes.Red;
+            if (zone.StatusColor == "warn") return Brushes.Goldenrod;
+            return null;
         }
 
         private void DrawPatchZoneLabels(
@@ -1657,7 +1771,6 @@ namespace LiraSlabZones.Revit2023.UI
             }
             foreach (var z in _result.Zones)
             {
-                if (!z.IsValid && z.StatusColor == "error") continue;
                 if (z.Contour == null || z.Contour.Count < 3) continue;
                 var arr = new Point3[z.Contour.Count];
                 for (int i = 0; i < z.Contour.Count; i++) arr[i] = z.Contour[i];
@@ -1690,8 +1803,7 @@ namespace LiraSlabZones.Revit2023.UI
 
             foreach (var zone in zones)
             {
-                if ((!zone.IsValid && zone.StatusColor == "error") ||
-                    zone.Contour == null || zone.Contour.Count < 3) continue;
+                if (zone.Contour == null || zone.Contour.Count < 3) continue;
                 var contour = zone.Contour.ToArray();
                 var shape = BuildShape(contour);
                 _drawPatchZones.Add(new CachedZoneShape

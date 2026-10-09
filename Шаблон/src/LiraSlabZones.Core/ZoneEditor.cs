@@ -518,12 +518,7 @@ namespace LiraSlabZones.Core
             var overlapX = Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX);
             var overlapY = Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
             if (overlapX > 1e-6 && overlapY > 1e-6)
-            {
-                var allowedMm = RebarTables.AllowedZoneOverlapMm(first, second);
-                var longitudinalMm = UnitConversion.MetersToMm(first.Direction == ZoneDirection.X
-                    ? overlapX : overlapY);
-                return allowedMm <= 0 || longitudinalMm + 1 < allowedMm;
-            }
+                return !IsAllowedLongitudinalLapOverlap(first, second);
             var requiredGap = Math.Min(first.BarStepMm, second.BarStepMm) / 1000.0;
             var gapX = Math.Max(0, Math.Max(a.MinX, b.MinX) - Math.Min(a.MaxX, b.MaxX));
             var gapY = Math.Max(0, Math.Max(a.MinY, b.MinY) - Math.Min(a.MaxY, b.MaxY));
@@ -535,6 +530,33 @@ namespace LiraSlabZones.Core
                    (overlapX > 1e-6 && gapY < requiredGap - 1e-6);
         }
 
+        internal static bool IsAllowedLongitudinalLapOverlap(
+            AdditionalZone first, AdditionalZone second)
+        {
+            if (first.Layer != second.Layer || first.Direction != second.Direction ||
+                first.Contour.Count < 3 || second.Contour.Count < 3)
+                return false;
+
+            var allowedMm = RebarTables.AllowedZoneOverlapMm(first, second);
+            if (allowedMm <= 0) return false;
+
+            var a = Bounds(first.Contour);
+            var b = Bounds(second.Contour);
+            var longitudinalOverlap = first.Direction == ZoneDirection.X
+                ? Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX)
+                : Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+            var firstCrossMin = first.Direction == ZoneDirection.X ? a.MinY : a.MinX;
+            var firstCrossMax = first.Direction == ZoneDirection.X ? a.MaxY : a.MaxX;
+            var secondCrossMin = first.Direction == ZoneDirection.X ? b.MinY : b.MinX;
+            var secondCrossMax = first.Direction == ZoneDirection.X ? b.MaxY : b.MaxX;
+
+            const double crossAlignmentToleranceM = 0.001;
+            var sameBarBand = Math.Abs(firstCrossMin - secondCrossMin) <= crossAlignmentToleranceM &&
+                              Math.Abs(firstCrossMax - secondCrossMax) <= crossAlignmentToleranceM;
+            return sameBarBand &&
+                   UnitConversion.MetersToMm(longitudinalOverlap) + 1 >= allowedMm;
+        }
+
         public static void EnforceRequiredGaps(
             IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
             AnalysisSettings? settings = null, IList<Point3>? slab = null,
@@ -543,15 +565,29 @@ namespace LiraSlabZones.Core
             var platesById = plates.ToDictionary(plate => plate.Id);
             for (var pass = 0; pass < Math.Min(512, Math.Max(1, zones.Count * 2)); pass++)
             {
+                var adjacentSpacingPairs = ZoneLayoutDiagnostics.AddInterZoneStepIssues(
+                    zones, new ZoneDiagnostics(),
+                    UnitConversion.MmToMeters(Math.Max(0, settings?.GridCellMm ?? 0)));
                 var changed = false;
                 for (var i = 0; i < zones.Count && !changed; i++)
                 for (var j = i + 1; j < zones.Count; j++)
                 {
                     var first = zones[i];
                     var second = zones[j];
-                    if (!HasPlacementConflict(first, second)) continue;
-                    if (!TryResolvePlacementConflict(
+                    var placementConflict = HasPlacementConflict(first, second);
+                    var excessiveAdjacentGap = !placementConflict &&
+                        adjacentSpacingPairs.Contains((i, j));
+                    if (!placementConflict && !excessiveAdjacentGap) continue;
+                    if (excessiveAdjacentGap &&
+                        TryExpandWeakerZoneIntoGap(
                             zones, first, second, platesById, settings, slab, openings))
+                    {
+                        changed = true;
+                        break;
+                    }
+                    if (!TryResolvePlacementConflict(
+                            zones, first, second, platesById, settings, slab, openings,
+                            requireExactGap: excessiveAdjacentGap))
                         continue;
                     changed = true;
                     break;
@@ -1117,7 +1153,8 @@ namespace LiraSlabZones.Core
         private static bool TryResolvePlacementConflict(
             IList<AdditionalZone> zones, AdditionalZone first, AdditionalZone second,
             IReadOnlyDictionary<int, LiraPlateElement> platesById,
-            AnalysisSettings? settings, IList<Point3>? slab, IList<OpeningInfo>? openings)
+            AnalysisSettings? settings, IList<Point3>? slab, IList<OpeningInfo>? openings,
+            bool requireExactGap = false)
         {
             var gap = Math.Min(first.BarStepMm, second.BarStepMm) / 1000.0;
             var a = Bounds(first.Contour);
@@ -1140,6 +1177,7 @@ namespace LiraSlabZones.Core
 
             bool IsSafe(AdditionalZone copy, AdditionalZone moving, AdditionalZone reference) =>
                 !HasPlacementConflict(copy, reference) &&
+                (!requireExactGap || HasExactAdjacentGap(copy, reference, gap)) &&
                 (openings == null || openings.Count == 0 || !IntersectsOpening(copy, openings)) &&
                 PreservesRequiredCoverage(copy, moving, zones, platesById, settings, slab, openings) &&
                 !zones.Any(other =>
@@ -1169,6 +1207,311 @@ namespace LiraSlabZones.Core
                         Covers(moving, plate.Centroid)).Select(plate => plate.Id).ToList();
                 moving.ElementId = moving.NodeIds.FirstOrDefault();
                 moving.Comment = $"зазор {Math.Min(moving.BarStepMm, reference.BarStepMm)} мм создан автоматически";
+                return true;
+            }
+
+            return TryShrinkAndShiftForConflict(
+                zones, first, second, platesById, settings, slab, openings);
+        }
+
+        private static bool TryShrinkAndShiftForConflict(
+            IList<AdditionalZone> zones,
+            AdditionalZone first,
+            AdditionalZone second,
+            IReadOnlyDictionary<int, LiraPlateElement> platesById,
+            AnalysisSettings? settings,
+            IList<Point3>? slab,
+            IList<OpeningInfo>? openings)
+        {
+            if (first.Direction != second.Direction || first.BarStepMm <= 0 ||
+                second.BarStepMm <= 0) return false;
+
+            var eligible = new List<(AdditionalZone Moving, AdditionalZone Reference)>();
+            if (CanShrinkForConflict(first, second)) eligible.Add((first, second));
+            if (CanShrinkForConflict(second, first)) eligible.Add((second, first));
+            foreach (var pair in eligible.OrderBy(item => item.Moving.AsAdditional)
+                         .ThenBy(item => item.Moving.LengthMm))
+            {
+                var moving = pair.Moving;
+                var reference = pair.Reference;
+                var stepMm = moving.BarStepMm;
+                var originalBounds = Bounds(moving.Contour);
+                var referenceBounds = Bounds(reference.Contour);
+                var originalCross = moving.Direction == ZoneDirection.X
+                    ? (Min: originalBounds.MinY, Max: originalBounds.MaxY)
+                    : (Min: originalBounds.MinX, Max: originalBounds.MaxX);
+                var referenceCross = moving.Direction == ZoneDirection.X
+                    ? (Min: referenceBounds.MinY, Max: referenceBounds.MaxY)
+                    : (Min: referenceBounds.MinX, Max: referenceBounds.MaxX);
+                var axialOverlap = moving.Direction == ZoneDirection.X
+                    ? Math.Min(originalBounds.MaxX, referenceBounds.MaxX) -
+                      Math.Max(originalBounds.MinX, referenceBounds.MinX)
+                    : Math.Min(originalBounds.MaxY, referenceBounds.MaxY) -
+                      Math.Max(originalBounds.MinY, referenceBounds.MinY);
+                if (axialOverlap <= 1e-6) continue;
+
+                var currentModules = (int)Math.Floor(
+                    UnitConversion.MetersToMm(originalCross.Max - originalCross.Min) / stepMm + 1e-8);
+                var configuredMinimumMm = settings == null
+                    ? stepMm
+                    : settings.EffectiveMinZoneWidthM * 1000.0;
+                var minimumModules = Math.Max(1, (int)Math.Ceiling(
+                    Math.Max(configuredMinimumMm, stepMm) / stepMm - 1e-8));
+                var requiredGapM = Math.Min(moving.BarStepMm, reference.BarStepMm) / 1000.0;
+                if (currentModules <= minimumModules) continue;
+
+                for (var modules = currentModules - 1; modules >= minimumModules; modules--)
+                {
+                    var widthM = UnitConversion.MmToMeters(modules * stepMm);
+                    var placements = new[]
+                    {
+                        (Min: referenceCross.Min - requiredGapM - widthM,
+                         Max: referenceCross.Min - requiredGapM),
+                        (Min: referenceCross.Max + requiredGapM,
+                         Max: referenceCross.Max + requiredGapM + widthM)
+                    }.OrderBy(interval => Math.Abs(
+                        (interval.Min + interval.Max - originalCross.Min - originalCross.Max) * 0.5))
+                     .ToList();
+
+                    foreach (var cross in placements)
+                    {
+                        var copy = Copy(moving);
+                        var candidateBounds = originalBounds;
+                        if (moving.Direction == ZoneDirection.X)
+                        {
+                            candidateBounds.MinY = cross.Min;
+                            candidateBounds.MaxY = cross.Max;
+                        }
+                        else
+                        {
+                            candidateBounds.MinX = cross.Min;
+                            candidateBounds.MaxX = cross.Max;
+                        }
+
+                        if (!ApplyClipped(copy, Rectangle(candidateBounds.MinX,
+                                candidateBounds.MaxX, candidateBounds.MinY,
+                                candidateBounds.MaxY, moving.LevelZM), slab ?? new List<Point3>()) ||
+                            Math.Abs(copy.WidthMm / stepMm -
+                                     Math.Round(copy.WidthMm / stepMm)) > 0.001 ||
+                            copy.WidthMm + 1e-6 < minimumModules * stepMm ||
+                            HasPlacementConflict(copy, reference) ||
+                            !HasExactAdjacentGap(copy, reference, requiredGapM) ||
+                            (openings != null && openings.Count > 0 && IntersectsOpening(copy, openings)) ||
+                            !PreservesRequiredCoverage(copy, moving, zones, platesById,
+                                settings, slab, openings))
+                            continue;
+
+                        var proposed = zones.Where(zone => !ReferenceEquals(zone, moving))
+                            .Concat(new[] { copy }).ToList();
+                        var createsConflict = zones.Any(other =>
+                            !ReferenceEquals(other, moving) && !ReferenceEquals(other, reference) &&
+                            other.Layer == moving.Layer && !HasPlacementConflict(moving, other) &&
+                            HasPlacementConflict(copy, other));
+                        if (createsConflict) continue;
+
+                        var oldBounds = Bounds(moving.Contour);
+                        var replacementBounds = Bounds(copy.Contour);
+                        var padding = UnitConversion.MmToMeters(Math.Max(
+                            moving.BarStepMm, reference.BarStepMm));
+                        var losesNearbyCoverage = platesById.Values.Any(plate =>
+                        {
+                            if (!plate.Rebar.Ok ||
+                                plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) <=
+                                    MosaicBuilder.PositiveResidualToleranceCm2PerM)
+                                return false;
+                            var plateBounds = PlateBounds(plate);
+                            if (plateBounds.MaxX < Math.Min(oldBounds.MinX, replacementBounds.MinX) - padding ||
+                                plateBounds.MinX > Math.Max(oldBounds.MaxX, replacementBounds.MaxX) + padding ||
+                                plateBounds.MaxY < Math.Min(oldBounds.MinY, replacementBounds.MinY) - padding ||
+                                plateBounds.MinY > Math.Max(oldBounds.MaxY, replacementBounds.MaxY) + padding)
+                                return false;
+                            var requiredAs = plate.Rebar.Get(moving.Layer) -
+                                             BackgroundAs(settings, moving.Layer);
+                            return HasCoverage(zones, moving.Layer, plate, requiredAs, slab, openings) &&
+                                   !HasCoverage(proposed, moving.Layer, plate, requiredAs, slab, openings);
+                        });
+                        if (losesNearbyCoverage) continue;
+
+                        SetContour(moving, copy.Contour.ToList());
+                        moving.NodeIds = moving.NodeIds.Where(id =>
+                                platesById.TryGetValue(id, out var plate) && IntersectsBounds(moving, plate))
+                            .Concat(platesById.Values.Where(plate => plate.Rebar.Ok &&
+                                    plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) >
+                                        MosaicBuilder.PositiveResidualToleranceCm2PerM &&
+                                    moving.AsCoveredCm2PerM + 1e-6 >=
+                                        plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) &&
+                                    IntersectsBounds(moving, plate))
+                                .Select(plate => plate.Id)).Distinct().ToList();
+                        moving.ElementId = moving.NodeIds.FirstOrDefault();
+                        moving.Comment = $"ширина уменьшена на {currentModules * stepMm - modules * stepMm} мм; " +
+                                         $"создан зазор {requiredGapM * 1000:0} мм с сохранением покрытия КЭ";
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool CanShrinkForConflict(AdditionalZone moving, AdditionalZone reference)
+        {
+            if (moving.AsAdditional < reference.AsAdditional - 1e-6) return true;
+            return Math.Abs(moving.AsAdditional - reference.AsAdditional) <= 1e-6 &&
+                   moving.DiameterMm == reference.DiameterMm &&
+                   moving.BarStepMm == reference.BarStepMm &&
+                   moving.LengthMm < reference.LengthMm - 1;
+        }
+
+        private static bool HasExactAdjacentGap(
+            AdditionalZone first, AdditionalZone second, double requiredGapM)
+        {
+            if (first.Layer != second.Layer || first.Direction != second.Direction)
+                return false;
+            var a = Bounds(first.Contour);
+            var b = Bounds(second.Contour);
+            var longitudinalOverlap = first.Direction == ZoneDirection.X
+                ? Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX)
+                : Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+            if (longitudinalOverlap <= 1e-6) return false;
+            var gap = first.Direction == ZoneDirection.X
+                ? Math.Max(0, Math.Max(a.MinY, b.MinY) - Math.Min(a.MaxY, b.MaxY))
+                : Math.Max(0, Math.Max(a.MinX, b.MinX) - Math.Min(a.MaxX, b.MaxX));
+            return Math.Abs(gap - requiredGapM) <= 0.001;
+        }
+
+        private static bool TryExpandWeakerZoneIntoGap(
+            IList<AdditionalZone> zones, AdditionalZone first, AdditionalZone second,
+            IReadOnlyDictionary<int, LiraPlateElement> platesById,
+            AnalysisSettings? settings, IList<Point3>? slab, IList<OpeningInfo>? openings)
+        {
+            if (first.Layer != second.Layer || first.Direction != second.Direction ||
+                first.FamilyKind != ZoneFamilyKind.Straight ||
+                second.FamilyKind != ZoneFamilyKind.Straight ||
+                first.BarStepMm <= 0 || second.BarStepMm <= 0)
+                return false;
+
+            var a = Bounds(first.Contour);
+            var b = Bounds(second.Contour);
+            var axialOverlap = first.Direction == ZoneDirection.X
+                ? Math.Min(a.MaxX, b.MaxX) - Math.Max(a.MinX, b.MinX)
+                : Math.Min(a.MaxY, b.MaxY) - Math.Max(a.MinY, b.MinY);
+            if (axialOverlap <= 1e-6) return false;
+
+            var firstCrossMin = first.Direction == ZoneDirection.X ? a.MinY : a.MinX;
+            var firstCrossMax = first.Direction == ZoneDirection.X ? a.MaxY : a.MaxX;
+            var secondCrossMin = first.Direction == ZoneDirection.X ? b.MinY : b.MinX;
+            var secondCrossMax = first.Direction == ZoneDirection.X ? b.MaxY : b.MaxX;
+            AdditionalZone left;
+            AdditionalZone right;
+            if (firstCrossMax < secondCrossMin)
+            {
+                left = first;
+                right = second;
+            }
+            else if (secondCrossMax < firstCrossMin)
+            {
+                left = second;
+                right = first;
+            }
+            else
+            {
+                return false;
+            }
+
+            var gap = (right.Direction == ZoneDirection.X
+                ? Bounds(right.Contour).MinY - Bounds(left.Contour).MaxY
+                : Bounds(right.Contour).MinX - Bounds(left.Contour).MaxX);
+            var requiredGap = UnitConversion.MmToMeters(Math.Min(first.BarStepMm, second.BarStepMm));
+            var expansionNeededMm = UnitConversion.MetersToMm(gap - requiredGap);
+            if (expansionNeededMm <= 1) return false;
+
+            foreach (var moving in new[] { left, right }
+                         .OrderBy(zone => zone.AsCoveredCm2PerM)
+                         .ThenBy(zone => zone.NodeIds.Count))
+            {
+                var step = moving.BarStepMm;
+                var bounds = Bounds(moving.Contour);
+                var currentWidthMm = UnitConversion.MetersToMm(moving.Direction == ZoneDirection.X
+                    ? bounds.MaxY - bounds.MinY : bounds.MaxX - bounds.MinX);
+                var roundedWidthMm = RebarTables.CeilToStep(currentWidthMm, step);
+                var addedModules = Math.Max(1, (int)Math.Ceiling((expansionNeededMm - 1e-6) / step));
+                var targetWidthMm = roundedWidthMm + addedModules * step;
+                var targetWidthM = UnitConversion.MmToMeters(targetWidthMm);
+                var minX = bounds.MinX;
+                var maxX = bounds.MaxX;
+                var minY = bounds.MinY;
+                var maxY = bounds.MaxY;
+
+                if (ReferenceEquals(moving, left))
+                {
+                    if (moving.Direction == ZoneDirection.X)
+                        maxY = Bounds(right.Contour).MinY - requiredGap;
+                    else
+                        maxX = Bounds(right.Contour).MinX - requiredGap;
+                }
+                else
+                {
+                    if (moving.Direction == ZoneDirection.X)
+                        minY = Bounds(left.Contour).MaxY + requiredGap;
+                    else
+                        minX = Bounds(left.Contour).MaxX + requiredGap;
+                }
+
+                if (moving.Direction == ZoneDirection.X)
+                {
+                    if (ReferenceEquals(moving, left)) minY = maxY - targetWidthM;
+                    else maxY = minY + targetWidthM;
+                }
+                else
+                {
+                    if (ReferenceEquals(moving, left)) minX = maxX - targetWidthM;
+                    else maxX = minX + targetWidthM;
+                }
+
+                var copy = Copy(moving);
+                SetContour(copy, Rectangle(minX, maxX, minY, maxY, copy.LevelZM));
+                if (!ApplyClipped(copy, copy.Contour.ToList(), slab ?? new List<Point3>())) continue;
+                var actualWidthMm = UnitConversion.MetersToMm(copy.Direction == ZoneDirection.X
+                    ? copy.Contour.Max(point => point.Y) - copy.Contour.Min(point => point.Y)
+                    : copy.Contour.Max(point => point.X) - copy.Contour.Min(point => point.X));
+                if (Math.Abs(actualWidthMm - targetWidthMm) > 1 ||
+                    !HasExactAdjacentGap(copy, ReferenceEquals(moving, left) ? right : left, requiredGap))
+                    continue;
+
+                if ((openings?.Count ?? 0) > 0 && IntersectsOpening(copy, openings!)) continue;
+                if (!PreservesRequiredCoverage(copy, moving, zones, platesById,
+                        settings, slab, openings)) continue;
+
+                var proposedZones = zones.Where(zone => zone.Layer == moving.Layer &&
+                    !ReferenceEquals(zone, moving)).Concat(new[] { copy }).ToList();
+                var coverageValid = platesById.Values
+                    .Where(plate => plate.Rebar.Ok &&
+                        plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) >
+                            MosaicBuilder.PositiveResidualToleranceCm2PerM &&
+                        IntersectsBounds(copy, plate))
+                    .All(plate => ZoneCoverageRules.CoversOrBridgesGap(
+                        proposedZones, plate, moving.Layer,
+                        plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer),
+                        slab, openings));
+                if (!coverageValid || zones.Any(other =>
+                        !ReferenceEquals(other, moving) && other.Layer == moving.Layer &&
+                        HasPlacementConflict(copy, other)))
+                    continue;
+
+                copy.NodeIds = platesById.Values.Where(plate => plate.Rebar.Ok &&
+                        plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) >
+                            MosaicBuilder.PositiveResidualToleranceCm2PerM &&
+                        copy.AsCoveredCm2PerM + 1e-6 >=
+                            plate.Rebar.Get(moving.Layer) - BackgroundAs(settings, moving.Layer) &&
+                        Covers(copy, plate.Centroid))
+                    .Select(plate => plate.Id).Distinct().ToList();
+                copy.ElementId = copy.NodeIds.FirstOrDefault();
+                copy.Comment = AppendComment(copy.Comment,
+                    $"ширина увеличена на {addedModules * step} мм для точного зазора {Math.Min(first.BarStepMm, second.BarStepMm)} мм");
+                SetContour(moving, copy.Contour.ToList());
+                moving.NodeIds = copy.NodeIds;
+                moving.ElementId = copy.ElementId;
+                moving.Comment = copy.Comment;
                 return true;
             }
 

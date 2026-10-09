@@ -72,6 +72,7 @@ namespace LiraSlabZones.Core
             public double Capacity;
             public double ReinforcementAreaPriority;
             public int StepMm;
+            public double MinimumWidthM;
             public bool WidthNormalizationFailed;
             public double SupportCrossCenter => (SupportCrossMin + SupportCrossMax) * 0.5;
         }
@@ -145,7 +146,8 @@ namespace LiraSlabZones.Core
             foreach (var group in entries.GroupBy(entry => entry.Zone.Layer)
                          .SelectMany(layerGroup => layerGroup.GroupBy(entry => entry.Zone.Direction)))
             {
-                var lanes = BuildLanes(group).OrderBy(lane => lane.SupportCrossCenter).ToList();
+                var lanes = BuildLanes(group, settings.EffectiveMinZoneWidthM)
+                    .OrderBy(lane => lane.SupportCrossCenter).ToList();
                 RestrictOverrunToPatchEdges(lanes, Math.Max(0, settings.GridCellMm) / 1000.0);
                 var laneIndexByZone = lanes.SelectMany((lane, index) => lane.Entries
                     .Select(entry => (entry.Zone, Index: index)))
@@ -177,6 +179,39 @@ namespace LiraSlabZones.Core
             }
 
             foreach (var entry in entries) ApplyInterval(entry);
+
+            var absorbedBeforeNormalization = result.AbsorbedContainedZones;
+            var splitBeforeNormalization = result.SplitContainedZones;
+            ResolveContainedZoneOverlaps(zones, supportBoundsByZone, patchBoundsByZone,
+                plates, settings, slabOutline, openings, result);
+            if (result.AbsorbedContainedZones != absorbedBeforeNormalization ||
+                result.SplitContainedZones != splitBeforeNormalization)
+            {
+                var previousSnapshots = snapshots;
+                var previousSnapshotsById = snapshots
+                    .GroupBy(pair => pair.Key.ZoneId)
+                    .ToDictionary(group => group.Key, group => group.First().Value);
+                adjustable = zones.Where(IsAdjustable).ToList();
+                snapshots = new Dictionary<AdditionalZone, Snapshot>();
+                foreach (var zone in adjustable)
+                {
+                    if (previousSnapshots.TryGetValue(zone, out var priorSnapshot))
+                        snapshots[zone] = priorSnapshot;
+                    else if (previousSnapshotsById.TryGetValue(zone.ZoneId, out priorSnapshot))
+                        snapshots[zone] = priorSnapshot;
+                    else
+                        snapshots[zone] = Capture(zone);
+                }
+                zonesByLayer = adjustable.GroupBy(zone => zone.Layer)
+                    .ToDictionary(group => group.Key, group => (IList<AdditionalZone>)group.ToList());
+                entries = adjustable.Select(zone => CreateEntry(
+                        zone, supportBoundsByZone, patchBoundsByZone, settings))
+                    .Where(entry => entry != null)
+                    .Cast<Entry>()
+                    .ToList();
+                entryByZone = entries.ToDictionary(entry => entry.Zone);
+            }
+
             ResolveResidualGeometryConflicts(entries, alreadyCovered, zonesByLayer,
                 slabOutline, openings, result);
             var lostCoverage = alreadyCovered.Where(item =>
@@ -271,7 +306,8 @@ namespace LiraSlabZones.Core
             var rearrangedAny = false;
             foreach (var group in entries.GroupBy(entry => (entry.Zone.Layer, entry.Zone.Direction)))
             {
-                var lanes = BuildLanes(group).OrderBy(lane => lane.SupportCrossCenter).ToList();
+                var lanes = BuildLanes(group, settings.EffectiveMinZoneWidthM)
+                    .OrderBy(lane => lane.SupportCrossCenter).ToList();
                 RestrictOverrunToPatchEdges(lanes, Math.Max(0, settings.GridCellMm) / 1000.0);
                 var laneIndexByZone = lanes.SelectMany((lane, index) => lane.Entries
                         .Select(entry => (entry.Zone, Index: index)))
@@ -409,7 +445,7 @@ namespace LiraSlabZones.Core
             };
         }
 
-        private static List<Lane> BuildLanes(IEnumerable<Entry> entries)
+        private static List<Lane> BuildLanes(IEnumerable<Entry> entries, double minimumWidthM)
         {
             return entries.GroupBy(entry =>
             {
@@ -435,7 +471,8 @@ namespace LiraSlabZones.Core
                     Capacity = members.Min(entry => entry.Capacity),
                     ReinforcementAreaPriority = members.Min(entry => entry.Capacity) *
                         (supports.Max(interval => interval.Max) - supports.Min(interval => interval.Min)),
-                    StepMm = members[0].StepMm
+                    StepMm = members[0].StepMm,
+                    MinimumWidthM = Math.Max(0, minimumWidthM)
                 };
             }).OrderBy(lane => lane.SupportCrossCenter).ToList();
         }
@@ -542,8 +579,9 @@ namespace LiraSlabZones.Core
                     .ThenBy(candidate => candidate.Lane.SupportCrossCenter)
                     .ToList();
 
-                if (candidates.Count > 1) continue;
-                if (item.BridgeFirst != null && item.BridgeSecond != null) continue;
+                if (candidates.Count > 1 ||
+                    (candidates.Count == 0 && item.BridgeFirst != null && item.BridgeSecond != null))
+                    continue;
                 var witness = candidates.FirstOrDefault();
                 if (witness.Zone == null && item.DirectWitness != null &&
                     laneIndexByZone.TryGetValue(item.DirectWitness, out var directIndex) &&
@@ -601,7 +639,8 @@ namespace LiraSlabZones.Core
                     ? lane.CoverageCrossMax - lane.CoverageCrossMin
                     : 0;
                 var targetWidth = RoundUpToStep(Math.Max(
-                    lane.SupportCrossMax - lane.SupportCrossMin, protectedWidth), stepM);
+                    Math.Max(lane.SupportCrossMax - lane.SupportCrossMin, protectedWidth),
+                    Math.Max(stepM, lane.MinimumWidthM)), stepM);
                 if (targetWidth >= lane.CrossMax - lane.CrossMin - GeometryToleranceM) continue;
                 if (!TrySetLaneWidth(lane, targetWidth)) continue;
                 result.ShrunkWeakZones += lane.Entries.Count;
@@ -610,6 +649,13 @@ namespace LiraSlabZones.Core
 
         private static bool TrySetLaneWidth(Lane lane, double targetWidth)
         {
+            var stepM = lane.StepMm / 1000.0;
+            var protectedWidth = lane.CoverageCrossMin <= lane.CoverageCrossMax
+                ? lane.CoverageCrossMax - lane.CoverageCrossMin
+                : 0;
+            var minimumWidth = RoundUpToStep(Math.Max(
+                Math.Max(stepM, lane.MinimumWidthM), protectedWidth), stepM);
+            if (targetWidth < minimumWidth - GeometryToleranceM) return false;
             if (targetWidth > lane.AllowedCrossMax - lane.AllowedCrossMin + GeometryToleranceM)
                 return false;
             var minimumStart = Math.Max(lane.AllowedCrossMin, lane.SupportCrossMax - targetWidth);
@@ -656,18 +702,32 @@ namespace LiraSlabZones.Core
 
             var snapshots = lanes.Select(lane =>
                 (lane.CrossMin, lane.CrossMax, lane.PreferredStart)).ToArray();
-            var reduced = new List<int>();
+            var reduced = new HashSet<int>();
             foreach (var candidate in candidates.OrderByDescending(item => item.Value)
                          .ThenBy(item => lanes[item.Key].ReinforcementAreaPriority))
             {
                 var lane = lanes[candidate.Key];
                 var stepM = lane.StepMm / 1000.0;
-                var targetWidth = lane.CrossMax - lane.CrossMin - stepM;
-                if (targetWidth < stepM - GeometryToleranceM ||
-                    Math.Abs(targetWidth / stepM - Math.Round(targetWidth / stepM)) > 1e-6 ||
-                    !TrySetLaneWidthForConflict(lane, targetWidth))
-                    continue;
-                reduced.Add(candidate.Key);
+                var protectedWidth = lane.CoverageCrossMin <= lane.CoverageCrossMax
+                    ? lane.CoverageCrossMax - lane.CoverageCrossMin
+                    : 0;
+                var minimumWidth = RoundUpToStep(Math.Max(
+                    Math.Max(stepM, lane.MinimumWidthM), protectedWidth), stepM);
+                while (lane.CrossMax - lane.CrossMin - stepM >=
+                       minimumWidth - GeometryToleranceM)
+                {
+                    var targetWidth = lane.CrossMax - lane.CrossMin - stepM;
+                    if (!TrySetLaneWidthForConflict(lane, targetWidth)) break;
+                    reduced.Add(candidate.Key);
+                    if (TryArrangeComponent(lanes, edges, out starts, out _))
+                    {
+                        unresolvedEdges = 0;
+                        if (result != null)
+                            result.ShrunkConflictZones += reduced.Sum(index =>
+                                lanes[index].Entries.Count);
+                        return true;
+                    }
+                }
             }
 
             if (reduced.Count == 0)
@@ -759,6 +819,11 @@ namespace LiraSlabZones.Core
 
             var minimumStart = lane.AllowedCrossMin;
             var maximumStart = lane.AllowedCrossMax - targetWidth;
+            if (lane.CoverageCrossMin <= lane.CoverageCrossMax)
+            {
+                minimumStart = Math.Max(minimumStart, lane.CoverageCrossMax - targetWidth);
+                maximumStart = Math.Min(maximumStart, lane.CoverageCrossMin);
+            }
             if (minimumStart > maximumStart + GeometryToleranceM) return false;
             var centeredStart = (lane.CrossMin + lane.CrossMax - targetWidth) * 0.5;
             lane.CrossMin = Clamp(centeredStart, minimumStart, maximumStart);
@@ -802,14 +867,15 @@ namespace LiraSlabZones.Core
 
                 var currentWidth = middle.CrossMax - middle.CrossMin;
                 var stepM = middle.StepMm / 1000.0;
+                var protectedWidth = middle.CoverageCrossMin <= middle.CoverageCrossMax
+                    ? middle.CoverageCrossMax - middle.CoverageCrossMin
+                    : 0;
+                var minimumWidth = RoundUpToStep(Math.Max(
+                    Math.Max(stepM, middle.MinimumWidthM), protectedWidth), stepM);
                 var leftGap = Math.Min(left.StepMm, middle.StepMm) / 1000.0;
                 var rightGap = Math.Min(middle.StepMm, right.StepMm) / 1000.0;
                 var supportSlot = right.SupportCrossMin - left.SupportCrossMax - leftGap - rightGap;
                 var targetWidth = RoundDownToStep(Math.Max(0, supportSlot), stepM);
-                var minimumWidth = stepM;
-                if (middle.CoverageCrossMin <= middle.CoverageCrossMax)
-                    minimumWidth = Math.Max(minimumWidth,
-                        RoundUpToStep(middle.CoverageCrossMax - middle.CoverageCrossMin, stepM));
                 if (targetWidth < minimumWidth - GeometryToleranceM)
                     targetWidth = minimumWidth;
                 if (result.PriorityDetails.Count < 20)
@@ -1593,7 +1659,7 @@ namespace LiraSlabZones.Core
         {
             var requiredAs = Math.Max(container.AsAdditional, contained.AsAdditional);
             var promoted = CapacityOf(container) + CoverageTolerance >= requiredAs
-                ? CloneZone(container)
+                ? container
                 : CreatePromotedContainer(container, contained, requiredAs,
                     supportBoundsByZone, patchBoundsByZone, settings);
             if (promoted == null) return false;

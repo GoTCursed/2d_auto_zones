@@ -2628,21 +2628,8 @@ namespace LiraSlabZones.Core
         private static bool IsAllowedLapOverlap(
             AdditionalZone a, AdditionalZone b,
             double aMinX, double aMaxX, double aMinY, double aMaxY,
-            double bMinX, double bMaxX, double bMinY, double bMaxY)
-        {
-            if (a.Layer != b.Layer || a.Direction != b.Direction) return false;
-            var allowedMm = RebarTables.AllowedZoneOverlapMm(a, b);
-            if (allowedMm <= 0) return false;
-            var longitudinalOverlapM = a.Direction == ZoneDirection.X
-                ? Math.Min(aMaxX, bMaxX) - Math.Max(aMinX, bMinX)
-                : Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY);
-            var perpendicularOverlapM = a.Direction == ZoneDirection.X
-                ? Math.Min(aMaxY, bMaxY) - Math.Max(aMinY, bMinY)
-                : Math.Min(aMaxX, bMaxX) - Math.Max(aMinX, bMinX);
-            return perpendicularOverlapM > 1e-6 &&
-                   longitudinalOverlapM > 1e-6 &&
-                   UnitConversion.MetersToMm(longitudinalOverlapM) + 1 >= allowedMm;
-        }
+            double bMinX, double bMaxX, double bMinY, double bMaxY) =>
+            ZoneEditor.IsAllowedLongitudinalLapOverlap(a, b);
 
         private static void SetZoneBounds(
             AdditionalZone zone, double minX, double maxX, double minY, double maxY)

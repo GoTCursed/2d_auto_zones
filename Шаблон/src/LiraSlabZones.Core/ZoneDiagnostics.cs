@@ -165,7 +165,7 @@ namespace LiraSlabZones.Core
             return result;
         }
 
-        private static HashSet<(int First, int Second)> AddInterZoneStepIssues(
+        internal static HashSet<(int First, int Second)> AddInterZoneStepIssues(
             IList<AdditionalZone> zones, ZoneDiagnostics result, double mosaicCellM)
         {
             var pairs = new HashSet<(int First, int Second)>();

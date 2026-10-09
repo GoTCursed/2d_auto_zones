@@ -1430,21 +1430,43 @@ namespace LiraSlabZones.Revit2023.UI
             }
             if (!useSavedZones)
             {
-                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);
+                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(
+                    _patchCandidateZones, patchSourceBounds, patchOuterBounds);
                 ZonePatchZoneBuilder.MergeShiftableAdjacentZonesAlongBars(
-                    _patchCandidateZones, patchSourceBounds, _settings);
-                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(_patchCandidateZones);
+                    _patchCandidateZones, patchSourceBounds, _settings,
+                    patchOuterBounds, _result.Plates, _result.Outline, _result.Openings);
+                ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(
+                    _patchCandidateZones, patchSourceBounds, patchOuterBounds);
                 var neighborLayout = ZonePatchNeighborLayout.Apply(
                     _patchCandidateZones, patchSourceBounds, patchOuterBounds,
                     _result.Plates, _settings, _result.Outline, _result.Openings);
-                if (!string.IsNullOrWhiteSpace(neighborLayout.Warning))
+                if (ZonePatchZoneBuilder.MergeAdjacentCompatibleZones(
+                        _patchCandidateZones, patchSourceBounds, patchOuterBounds) > 0)
+                {
+                    ZonePatchZoneBuilder.MergeShiftableAdjacentZonesAlongBars(
+                        _patchCandidateZones, patchSourceBounds, _settings,
+                        patchOuterBounds, _result.Plates, _result.Outline, _result.Openings);
+                    neighborLayout = ZonePatchNeighborLayout.Apply(
+                        _patchCandidateZones, patchSourceBounds, patchOuterBounds,
+                        _result.Plates, _settings, _result.Outline, _result.Openings);
+                }
+                ZoneEditor.EnforceRequiredGaps(
+                    _patchCandidateZones, _result.Plates, _settings,
+                    _result.Outline, _result.Openings);
+                neighborLayout = ZonePatchNeighborLayout.Apply(
+                    _patchCandidateZones, patchSourceBounds, patchOuterBounds,
+                    _result.Plates, _settings, _result.Outline, _result.Openings);
+                ZoneEditor.EnforceRequiredGaps(
+                    _patchCandidateZones, _result.Plates, _settings,
+                    _result.Outline, _result.Openings);
+                if (neighborLayout.UnresolvedWidths > 0)
                 {
                     foreach (var zone in _patchCandidateZones)
                     {
                         zone.StatusColor = "warn";
                         zone.Comment = string.IsNullOrWhiteSpace(zone.Comment)
-                            ? neighborLayout.Warning
-                            : zone.Comment + "; " + neighborLayout.Warning;
+                            ? "ширину не удалось нормировать к шагу зоны"
+                            : zone.Comment + "; ширину не удалось нормировать к шагу зоны";
                     }
                 }
                 if (_settings.ApplySlabBoundaryAndOpeningRules)

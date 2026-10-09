@@ -352,6 +352,65 @@ Assert ([LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($spacingLower, $sp
     'Zones separated by less than the smaller adjacent step were not reported in conflict.'
 Write-Host 'PASS transverse zone separation equals the smaller adjacent spacing'
 
+$wideGapSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$wideGapSettings.GridCellMm = 400
+$wideGapA = New-RectZone 0 4 0 1 100 2
+$wideGapB = New-RectZone 0 4 1.4 2.4 200 4
+$wideGapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$wideGapZones.Add($wideGapA)
+$wideGapZones.Add($wideGapB)
+$emptyGapPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+[LiraSlabZones.Core.ZoneEditor]::EnforceRequiredGaps(
+    $wideGapZones, $emptyGapPlates, $wideGapSettings, $null, $null)
+$actualWideGap = ($wideGapB.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum -
+    ($wideGapA.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum
+Assert ([Math]::Abs($actualWideGap - 0.1) -lt 1e-6) `
+    "Excessive 400 mm gap was not closed to the smaller 100 mm spacing; got $($actualWideGap * 1000) mm."
+Write-Host 'PASS nearby excessive gaps are closed to the exact smaller bar spacing'
+
+function New-StepGapPlate([int]$id, [double]$minY, [double]$maxY, [double]$as2) {
+    $plate = [LiraSlabZones.Core.LiraPlateElement]::new()
+    $plate.Id = $id
+    $plate.Centroid = [LiraSlabZones.Core.Point3]::new(2, ($minY + $maxY) / 2, 0)
+    $plate.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new(0, $minY, 0))
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new(4, $minY, 0))
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new(4, $maxY, 0))
+    $plate.Contour.Add([LiraSlabZones.Core.Point3]::new(0, $maxY, 0))
+    $plate.Rebar.Ok = $true
+    $plate.Rebar.As1 = 0
+    $plate.Rebar.As2 = $as2
+    return $plate
+}
+
+$anchoredGapA = New-RectZone 0 4 0 1 100 5
+$anchoredGapB = New-RectZone 0 4 1.4 2.4 100 10
+$anchoredGapA.NodeIds.Add(801)
+$anchoredGapB.NodeIds.Add(802)
+$anchorA = New-StepGapPlate 801 0 0.4 4
+$anchorB = New-StepGapPlate 802 2 2.4 4
+$gapElement = New-StepGapPlate 803 1 1.4 3
+$anchoredGapPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$anchoredGapPlates.Add($anchorA)
+$anchoredGapPlates.Add($anchorB)
+$anchoredGapPlates.Add($gapElement)
+$anchoredGapSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$anchoredGapSettings.GridCellMm = 400
+$anchoredGapZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$anchoredGapZones.Add($anchoredGapA)
+$anchoredGapZones.Add($anchoredGapB)
+[LiraSlabZones.Core.ZoneEditor]::EnforceRequiredGaps(
+    $anchoredGapZones, $anchoredGapPlates, $anchoredGapSettings, $null, $null)
+$anchoredGap = ($anchoredGapB.Contour | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum -
+    ($anchoredGapA.Contour | ForEach-Object { $_.Y } | Measure-Object -Maximum).Maximum
+Assert ([Math]::Abs($anchoredGap - 0.1) -lt 1e-6 -and
+        [Math]::Abs($anchoredGapA.WidthMm / $anchoredGapA.BarStepMm -
+                    [Math]::Round($anchoredGapA.WidthMm / $anchoredGapA.BarStepMm)) -lt 1e-9 -and
+        [LiraSlabZones.Core.ZoneCoverageRules]::CoversOrBridgesGap(
+            $anchoredGapZones, $gapElement, [LiraSlabZones.Core.RebarLayer]::As2, 3)) `
+    'An exact gap could not be achieved by step-rounded widening while preserving anchored FE and weak-capacity bridge coverage.'
+Write-Host 'PASS anchored adjacent zones widen by whole steps and bridge gap FE at weaker capacity'
+
 $partitionMethod = [LiraSlabZones.Core.ZoneLayoutEngine].GetMethod(
     'PartitionInvalidOverlaps', [Reflection.BindingFlags]'NonPublic,Static')
 $partitionMosaic = [LiraSlabZones.Core.MosaicGrid]::new()
@@ -741,6 +800,27 @@ for ($i = 0; $i -lt $localOverlapB.Contour.Count; $i++) {
 }
 Assert ([LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($localOverlapA, $localOverlapB)) `
     'Local bent details bypassed the required non-overlap rule.'
+$lapA = New-RectZone 0 11.7 0 2 200 5
+$lapA.LengthMm = 11700; $lapA.DiameterMm = 25; $lapA.ConcreteClass = 'B40'
+$lapB = New-RectZone 8.5 12.4 0 2 200 5
+$lapB.LengthMm = 3900; $lapB.DiameterMm = 25; $lapB.ConcreteClass = 'B40'
+Assert (-not [LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($lapA, $lapB)) `
+    'A valid 11700 mm longitudinal splice with aligned bar bands was rejected.'
+$lapB.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(8.5, 1, 0))
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(12.4, 1, 0))
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(12.4, 3, 0))
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(8.5, 3, 0))
+Assert ([LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($lapA, $lapB)) `
+    'A transverse overlap was incorrectly accepted as a longitudinal splice.'
+$lapB.Direction = [LiraSlabZones.Core.ZoneDirection]::Y
+$lapB.Contour = [Collections.Generic.List[LiraSlabZones.Core.Point3]]::new()
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(8.5, 0, 0))
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(12.4, 0, 0))
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(12.4, 2, 0))
+$lapB.Contour.Add([LiraSlabZones.Core.Point3]::new(8.5, 2, 0))
+Assert ([LiraSlabZones.Core.ZoneEditor]::HasPlacementConflict($lapA, $lapB)) `
+    'A cross-direction overlap was incorrectly accepted as a longitudinal splice.'
 Write-Host 'PASS 11700 zone overlap uses two laps of the larger diameter'
 
 function Test-ZoneCoverage($plate, $zones) {

@@ -277,7 +277,10 @@ namespace LiraSlabZones.Core
             return removed.Count;
         }
 
-        public static int MergeAdjacentCompatibleZones(IList<AdditionalZone> zones)
+        public static int MergeAdjacentCompatibleZones(
+            IList<AdditionalZone> zones,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds>? supportBoundsByZone = null,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds>? patchBoundsByZone = null)
         {
             if (zones == null || zones.Count < 2) return 0;
 
@@ -299,11 +302,23 @@ namespace LiraSlabZones.Core
 
                     var combined = ZoneEditor.Merge(first, second, Array.Empty<Point3>(), clipToSlab: false);
                     if (combined == null || combined.LengthMm > 11700 + lengthToleranceMm ||
-                        Math.Abs(combined.LengthMm - first.LengthMm) > lengthToleranceMm)
+                        Math.Abs(combined.LengthMm - first.LengthMm) > lengthToleranceMm ||
+                        Math.Abs(combined.WidthMm / first.BarStepMm -
+                                 Math.Round(combined.WidthMm / first.BarStepMm)) > 1e-6)
                         continue;
 
+                    var supportUnion = TryGetUnionBounds(
+                        supportBoundsByZone, first, second, out var supports)
+                        ? supports
+                        : (ZonePatchFrameBounds?)null;
+                    var patchUnion = TryGetUnionBounds(
+                        patchBoundsByZone, first, second, out var patches)
+                        ? patches
+                        : (ZonePatchFrameBounds?)null;
                     zones[i] = combined;
                     zones.RemoveAt(j);
+                    TransferMergedBounds(supportBoundsByZone, first, second, combined, supportUnion);
+                    TransferMergedBounds(patchBoundsByZone, first, second, combined, patchUnion);
                     mergeCount++;
                     merged = true;
                     break;
@@ -316,7 +331,11 @@ namespace LiraSlabZones.Core
         public static int MergeShiftableAdjacentZonesAlongBars(
             IList<AdditionalZone> zones,
             IDictionary<AdditionalZone, ZonePatchFrameBounds> supportBoundsByZone,
-            AnalysisSettings settings)
+            AnalysisSettings settings,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds>? patchBoundsByZone = null,
+            IList<LiraPlateElement>? plates = null,
+            IList<Point3>? slabOutline = null,
+            IList<OpeningInfo>? openings = null)
         {
             if (zones == null || zones.Count < 2 || supportBoundsByZone == null || settings == null)
                 return 0;
@@ -348,7 +367,22 @@ namespace LiraSlabZones.Core
                     var secondCross = CrossInterval(secondZoneBounds, second.Direction);
                     if (Math.Abs(firstCross.Min - secondCross.Min) > toleranceM ||
                         Math.Abs(firstCross.Max - secondCross.Max) > toleranceM)
-                        continue;
+                    {
+                        if (!TryMergeShiftedCrossAdjacentZones(
+                                zones, first, second, supportBoundsByZone, patchBoundsByZone,
+                                settings, plates, slabOutline, openings, maximumSupportGapM,
+                                toleranceM, toleranceMm))
+                            continue;
+                        if (patchBoundsByZone != null &&
+                            patchBoundsByZone.TryGetValue(first, out var mergedPatch))
+                            patchBoundsByZone[first] = mergedPatch;
+                        supportBoundsByZone.Remove(second);
+                        patchBoundsByZone?.Remove(second);
+                        zones.RemoveAt(j);
+                        mergeCount++;
+                        merged = true;
+                        break;
+                    }
 
                     var firstSupportCross = CrossInterval(firstSupport, first.Direction);
                     var secondSupportCross = CrossInterval(secondSupport, second.Direction);
@@ -433,6 +467,208 @@ namespace LiraSlabZones.Core
             return mergeCount;
         }
 
+        private static bool TryMergeShiftedCrossAdjacentZones(
+            IList<AdditionalZone> zones,
+            AdditionalZone first,
+            AdditionalZone second,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds> supportBoundsByZone,
+            IDictionary<AdditionalZone, ZonePatchFrameBounds>? patchBoundsByZone,
+            AnalysisSettings settings,
+            IList<LiraPlateElement>? plates,
+            IList<Point3>? slabOutline,
+            IList<OpeningInfo>? openings,
+            double maximumGapM,
+            double toleranceM,
+            double toleranceMm)
+        {
+            if (!supportBoundsByZone.TryGetValue(first, out var firstSupport) ||
+                !supportBoundsByZone.TryGetValue(second, out var secondSupport))
+                return false;
+
+            var firstBounds = Bounds(first.Contour);
+            var secondBounds = Bounds(second.Contour);
+            var firstCross = CrossInterval(firstBounds, first.Direction);
+            var secondCross = CrossInterval(secondBounds, second.Direction);
+            if (IntervalGap(firstCross, secondCross) > maximumGapM + toleranceM)
+                return false;
+
+            var firstAxial = AxialInterval(firstSupport, first.Direction);
+            var secondAxial = AxialInterval(secondSupport, second.Direction);
+            if (IntervalGap(firstAxial, secondAxial) > maximumGapM + toleranceM)
+                return false;
+
+            var familyLengthMm = Math.Min(first.LengthMm, second.LengthMm);
+            if (familyLengthMm > 11700 + toleranceMm ||
+                Math.Abs(first.LengthMm - second.LengthMm) > toleranceMm)
+                return false;
+
+            var anchorageMm = RebarTables.AnchorageLenMm(settings.ConcreteClass, first.DiameterMm);
+            var requiredAxialMinMm = UnitConversion.MetersToMm(
+                Math.Min(firstAxial.Min, secondAxial.Min)) - anchorageMm;
+            var requiredAxialMaxMm = UnitConversion.MetersToMm(
+                Math.Max(firstAxial.Max, secondAxial.Max)) + anchorageMm;
+            if (requiredAxialMaxMm - requiredAxialMinMm > familyLengthMm + toleranceMm)
+                return false;
+
+            var allowedStartMinMm = requiredAxialMaxMm - familyLengthMm;
+            var allowedStartMaxMm = requiredAxialMinMm;
+            var preferredStartMm = (
+                UnitConversion.MetersToMm(AxialInterval(firstBounds, first.Direction).Min) +
+                UnitConversion.MetersToMm(AxialInterval(secondBounds, second.Direction).Min)) * 0.5;
+            var startMm = Math.Max(allowedStartMinMm, Math.Min(allowedStartMaxMm, preferredStartMm));
+            var endMm = startMm + familyLengthMm;
+
+            var supportUnion = UnionBounds(firstSupport, secondSupport);
+            var requiredCross = (
+                Min: Math.Min(Math.Min(firstCross.Min, secondCross.Min),
+                    CrossInterval(supportUnion, first.Direction).Min),
+                Max: Math.Max(Math.Max(firstCross.Max, secondCross.Max),
+                    CrossInterval(supportUnion, first.Direction).Max));
+            var stepM = first.BarStepMm / 1000.0;
+            var targetWidthM = Math.Ceiling(
+                (requiredCross.Max - requiredCross.Min - 1e-9) / stepM) * stepM;
+            var patchUnion = patchBoundsByZone != null &&
+                patchBoundsByZone.TryGetValue(first, out var firstPatch) &&
+                patchBoundsByZone.TryGetValue(second, out var secondPatch)
+                    ? UnionBounds(firstPatch, secondPatch)
+                    : supportUnion;
+            var patchCross = CrossInterval(patchUnion, first.Direction);
+            var allowedCrossMin = patchCross.Min - maximumGapM;
+            var allowedCrossMax = patchCross.Max + maximumGapM;
+            var minStart = Math.Max(allowedCrossMin, requiredCross.Max - targetWidthM);
+            var maxStart = Math.Min(allowedCrossMax - targetWidthM, requiredCross.Min);
+            if (targetWidthM < stepM - toleranceM || minStart > maxStart + toleranceM)
+                return false;
+
+            var preferredCrossStart = Math.Min(firstCross.Min, secondCross.Min);
+            var crossStart = Math.Max(minStart, Math.Min(maxStart, preferredCrossStart));
+            var cross = (Min: crossStart, Max: crossStart + targetWidthM);
+            var z = first.LevelZM;
+            var minX = first.Direction == ZoneDirection.X
+                ? UnitConversion.MmToMeters(startMm) : cross.Min;
+            var maxX = first.Direction == ZoneDirection.X
+                ? UnitConversion.MmToMeters(endMm) : cross.Max;
+            var minY = first.Direction == ZoneDirection.Y
+                ? UnitConversion.MmToMeters(startMm) : cross.Min;
+            var maxY = first.Direction == ZoneDirection.Y
+                ? UnitConversion.MmToMeters(endMm) : cross.Max;
+            var candidate = new AdditionalZone
+            {
+                ZoneId = first.ZoneId,
+                ElementId = first.ElementId,
+                Layer = first.Layer,
+                Direction = first.Direction,
+                DiameterMm = first.DiameterMm,
+                BarStepMm = first.BarStepMm,
+                BarCount = Math.Max(1, (int)Math.Floor(targetWidthM * 1000 / first.BarStepMm + 1e-9) + 1),
+                WidthM = targetWidthM,
+                WidthMm = UnitConversion.MetersToMm(targetWidthM),
+                LengthM = UnitConversion.MmToMeters(familyLengthMm),
+                LengthMm = familyLengthMm,
+                LevelZM = z,
+                Placement = new Point3((minX + maxX) * 0.5, (minY + maxY) * 0.5, z),
+                Contour = new List<Point3>
+                {
+                    new Point3(minX, minY, z), new Point3(maxX, minY, z),
+                    new Point3(maxX, maxY, z), new Point3(minX, maxY, z)
+                },
+                NodeIds = first.NodeIds.Concat(second.NodeIds).Distinct().ToList(),
+                AsAdditional = Math.Max(first.AsAdditional, second.AsAdditional),
+                AsRequired = Math.Max(first.AsRequired, second.AsRequired),
+                AsCoveredCm2PerM = Math.Min(first.AsCoveredCm2PerM, second.AsCoveredCm2PerM),
+                Rebar = new PlateReinforcement { Ok = true },
+                IsValid = first.IsValid && second.IsValid,
+                StatusColor = first.StatusColor == "ok" && second.StatusColor == "ok" ? "ok" : "warn",
+                Comment = string.IsNullOrWhiteSpace(first.Comment)
+                    ? "смежные зоны выровнены с сохранением анкеровки и объединены"
+                    : first.Comment + "; смежные зоны выровнены с сохранением анкеровки и объединены",
+                FamilyKind = first.FamilyKind,
+                FamilyFileName = first.FamilyFileName,
+                ConcreteClass = first.ConcreteClass,
+                AlphaCoef = first.AlphaCoef,
+                RotationDeg = first.RotationDeg
+            };
+            SetLayerAs(candidate.Rebar, candidate.Layer,
+                candidate.AsRequired > 0 ? candidate.AsRequired : candidate.AsAdditional);
+
+            var layerZones = zones.Where(zone => zone.Layer == first.Layer &&
+                !ReferenceEquals(zone, first) && !ReferenceEquals(zone, second)).ToList();
+            if (layerZones.Any(other => ZoneEditor.HasPlacementConflict(candidate, other) &&
+                !ZoneEditor.HasPlacementConflict(first, other) &&
+                !ZoneEditor.HasPlacementConflict(second, other)))
+                return false;
+
+            if (plates != null)
+            {
+                var previousPair = new List<AdditionalZone> { first, second };
+                var proposed = layerZones.Concat(new[] { candidate }).ToList();
+                foreach (var plate in plates.Where(plate => plate.Rebar.Ok &&
+                             plate.Rebar.Get(first.Layer) - BackgroundAs(settings, first.Layer) >
+                             MosaicBuilder.PositiveResidualToleranceCm2PerM &&
+                             ZoneCoverageRules.CoversOrBridgesGap(previousPair, plate, first.Layer,
+                                 plate.Rebar.Get(first.Layer) - BackgroundAs(settings, first.Layer),
+                                 slabOutline, openings)))
+                {
+                    var requiredAs = plate.Rebar.Get(first.Layer) - BackgroundAs(settings, first.Layer);
+                    if (!ZoneCoverageRules.CoversOrBridgesGap(proposed, plate, first.Layer,
+                            requiredAs, slabOutline, openings))
+                        return false;
+                }
+            }
+
+            first.Contour = candidate.Contour;
+            first.Placement = candidate.Placement;
+            first.WidthM = candidate.WidthM;
+            first.WidthMm = candidate.WidthMm;
+            first.LengthM = candidate.LengthM;
+            first.LengthMm = candidate.LengthMm;
+            first.BarCount = candidate.BarCount;
+            first.NodeIds = candidate.NodeIds;
+            first.ElementId = first.NodeIds.FirstOrDefault();
+            first.AsAdditional = candidate.AsAdditional;
+            first.AsRequired = candidate.AsRequired;
+            first.AsCoveredCm2PerM = candidate.AsCoveredCm2PerM;
+            first.Rebar = candidate.Rebar;
+            first.IsValid = candidate.IsValid;
+            first.StatusColor = candidate.StatusColor;
+            first.Comment = candidate.Comment;
+
+            supportBoundsByZone[first] = supportUnion;
+            if (patchBoundsByZone != null)
+                patchBoundsByZone[first] = patchUnion;
+            return true;
+        }
+
+        private static bool TryGetUnionBounds(
+            IDictionary<AdditionalZone, ZonePatchFrameBounds>? boundsByZone,
+            AdditionalZone first,
+            AdditionalZone second,
+            out ZonePatchFrameBounds union)
+        {
+            if (boundsByZone != null && boundsByZone.TryGetValue(first, out var firstBounds) &&
+                boundsByZone.TryGetValue(second, out var secondBounds))
+            {
+                union = UnionBounds(firstBounds, secondBounds);
+                return true;
+            }
+
+            union = default;
+            return false;
+        }
+
+        private static void TransferMergedBounds(
+            IDictionary<AdditionalZone, ZonePatchFrameBounds>? boundsByZone,
+            AdditionalZone first,
+            AdditionalZone second,
+            AdditionalZone merged,
+            ZonePatchFrameBounds? union)
+        {
+            if (boundsByZone == null) return;
+            boundsByZone.Remove(first);
+            boundsByZone.Remove(second);
+            if (union.HasValue) boundsByZone[merged] = union.Value;
+        }
+
         private static double PeakDemand(
             IEnumerable<ZonePatch> patches, ZonePatchFrameBounds bounds, bool averagePeaks)
         {
@@ -497,16 +733,16 @@ namespace LiraSlabZones.Core
             {
                 var sameRun = Math.Abs(firstMinX - secondMinX) <= toleranceM &&
                               Math.Abs(firstMaxX - secondMaxX) <= toleranceM;
-                var touchAcrossWidth = Math.Abs(firstMaxY - secondMinY) <= toleranceM ||
-                                       Math.Abs(secondMaxY - firstMinY) <= toleranceM;
-                return sameRun && touchAcrossWidth;
+                var touchOrOverlapAcrossWidth =
+                    Math.Min(firstMaxY, secondMaxY) >= Math.Max(firstMinY, secondMinY) - toleranceM;
+                return sameRun && touchOrOverlapAcrossWidth;
             }
 
             var sameRunY = Math.Abs(firstMinY - secondMinY) <= toleranceM &&
                            Math.Abs(firstMaxY - secondMaxY) <= toleranceM;
-            var touchAcrossWidthX = Math.Abs(firstMaxX - secondMinX) <= toleranceM ||
-                                    Math.Abs(secondMaxX - firstMinX) <= toleranceM;
-            return sameRunY && touchAcrossWidthX;
+            var touchOrOverlapAcrossWidthX =
+                Math.Min(firstMaxX, secondMaxX) >= Math.Max(firstMinX, secondMinX) - toleranceM;
+            return sameRunY && touchOrOverlapAcrossWidthX;
         }
 
         private static DiameterStepOption? SelectSmallestDiameter(

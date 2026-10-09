@@ -2356,4 +2356,41 @@ Assert ($splitResult.SplitContainedZones -eq 1 -and $splitZones.Count -eq 3 -and
         $splitWidthsValid -and $splitCoverageValid -and $splitIntersections -eq 0) `
     "A weaker containing zone must split around a stronger contained zone when axial lengths match, preserving step widths, coverage and the 11700 mm limit. Result=$($splitResult | ConvertTo-Json -Compress); zones=$($splitZones.Count); split=$splitWidthsValid coverage=$splitCoverageValid intersections=$splitIntersections"
 
+$cleanupSettings = [LiraSlabZones.Core.AnalysisSettings]::new()
+$cleanupPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$cleanupPlates.Add((New-QuadPlate 3001 0 1 0 1 8))
+$cleanupPlates.Add((New-QuadPlate 3002 4 5 4 5 0))
+$cleanupZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$zoneWithRealDemand = New-TestZone 0.2 0.8 0.2 0.8 ([LiraSlabZones.Core.ZoneDirection]::X)
+$zoneWithRealDemand.NodeIds.Add(9999)
+$staleEmptyZone = New-TestZone 4 5 4 5 ([LiraSlabZones.Core.ZoneDirection]::X)
+$staleEmptyZone.NodeIds.Add(3001)
+$noDemandZone = New-TestZone 4 5 4 5 ([LiraSlabZones.Core.ZoneDirection]::X)
+$noDemandZone.NodeIds.Add(3002)
+$cleanupZones.Add($zoneWithRealDemand)
+$cleanupZones.Add($staleEmptyZone)
+$cleanupZones.Add($noDemandZone)
+$removedEmptyZones = [LiraSlabZones.Core.ZoneEditor]::RemoveZonesWithoutRequiredElements(
+    $cleanupZones, $cleanupPlates, $cleanupSettings, $null, $null)
+Assert ($removedEmptyZones -eq 2 -and $cleanupZones.Count -eq 1 -and
+        [object]::ReferenceEquals($cleanupZones[0], $zoneWithRealDemand) -and
+        $zoneWithRealDemand.NodeIds.Count -eq 1 -and $zoneWithRealDemand.NodeIds[0] -eq 3001) `
+    'Empty zones must be removed using current geometry and demand, not stale node assignments.'
+
+$bridgeCleanupPlates = [Collections.Generic.List[LiraSlabZones.Core.LiraPlateElement]]::new()
+$bridgeCleanupPlates.Add((New-QuadPlate 3003 0.2 1.8 0.8 0.9 3))
+$bridgeCleanupZones = [Collections.Generic.List[LiraSlabZones.Core.AdditionalZone]]::new()
+$bridgeCleanupLower = New-TestZone 0 2 0 0.8 ([LiraSlabZones.Core.ZoneDirection]::X) 22 100
+$bridgeCleanupUpper = New-TestZone 0 2 0.9 1.7 ([LiraSlabZones.Core.ZoneDirection]::X) 22 100
+$bridgeCleanupLower.NodeIds.Add(9998)
+$bridgeCleanupUpper.NodeIds.Add(9999)
+$bridgeCleanupZones.Add($bridgeCleanupLower)
+$bridgeCleanupZones.Add($bridgeCleanupUpper)
+$removedBridgeZones = [LiraSlabZones.Core.ZoneEditor]::RemoveZonesWithoutRequiredElements(
+    $bridgeCleanupZones, $bridgeCleanupPlates, $cleanupSettings, $null, $null)
+Assert ($removedBridgeZones -eq 0 -and $bridgeCleanupZones.Count -eq 2 -and
+        $bridgeCleanupLower.NodeIds.Count -eq 1 -and $bridgeCleanupLower.NodeIds[0] -eq 3003 -and
+        $bridgeCleanupUpper.NodeIds.Count -eq 1 -and $bridgeCleanupUpper.NodeIds[0] -eq 3003) `
+    'Zones that are necessary to cover a required element in the allowed inter-zone gap must be retained.'
+
 Write-Host 'PASS patches and frame zones: detail/reverse rules, bar sizing, unclipped edits, and compatible zone merging'

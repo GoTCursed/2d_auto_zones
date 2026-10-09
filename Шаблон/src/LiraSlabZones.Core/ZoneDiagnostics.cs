@@ -430,6 +430,26 @@ namespace LiraSlabZones.Core
         private static readonly ConditionalWeakTable<AdditionalZone, CachedZoneOpeningBuffers> ZoneOpeningBufferCache =
             new ConditionalWeakTable<AdditionalZone, CachedZoneOpeningBuffers>();
 
+        public static bool IntersectsElementFootprint(
+            AdditionalZone zone, LiraPlateElement plate, IList<Point3>? slabOutline = null)
+        {
+            if (zone?.Contour == null || zone.Contour.Count < 3 || plate == null) return false;
+            var footprint = GetFootprint(plate, slabOutline);
+            if (footprint.UsePointFallback) return DirectlyCovers(zone, plate.Centroid);
+            if (!footprint.IsValid) return false;
+
+            var zoneBounds = Bounds(zone);
+            if (zoneBounds.MaxX <= footprint.Bounds.MinX ||
+                zoneBounds.MinX >= footprint.Bounds.MaxX ||
+                zoneBounds.MaxY <= footprint.Bounds.MinY ||
+                zoneBounds.MinY >= footprint.Bounds.MaxY)
+                return false;
+
+            var overlap = Clipper.Intersect(
+                new Paths64 { ToPath(zone.Contour) }, ClonePaths(footprint.Paths), FillRule.NonZero);
+            return overlap.Sum(path => Math.Abs(Clipper.Area(path))) > 0.5;
+        }
+
         public static bool CoversOrBridgesGap(
             IList<AdditionalZone> zones, Point3 point, double requiredAs = 0)
         {

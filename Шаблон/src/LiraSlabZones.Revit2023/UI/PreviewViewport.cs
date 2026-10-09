@@ -1238,6 +1238,9 @@ namespace LiraSlabZones.Revit2023.UI
                 }
                 _pendingUndo = null;
             }
+            ZoneEditor.RemoveZonesWithoutRequiredElements(
+                zones, _result.Plates, _settings, _result.Outline, _result.Openings);
+            if (keepSelected != null && !zones.Contains(keepSelected)) keepSelected = null;
             AssignZoneIds(zones);
             if (_result.PatchPreviewOnly) RefreshPatchFrameZones();
             if (_result.PatchPreviewOnly) _result.Zones = zones.ToList();
@@ -1275,6 +1278,12 @@ namespace LiraSlabZones.Revit2023.UI
                     _plateShapes.Add(BuildShape(plate.Contour));
                 if (_result.PatchPreviewOnly)
                     RebuildPatchGeometryCache();
+                else
+                {
+                    ZoneEditor.RemoveZonesWithoutRequiredElements(
+                        _result.Zones, _result.Plates, _settings, _result.Outline, _result.Openings);
+                    AssignZoneIds(_result.Zones);
+                }
             }
             RebuildZoneGeometryCache();
             RefreshDiagnostics();
@@ -1498,6 +1507,8 @@ namespace LiraSlabZones.Revit2023.UI
                         _patchCandidateZones, _settings, _result.Outline);
                 }
             }
+            ZoneEditor.RemoveZonesWithoutRequiredElements(
+                _patchCandidateZones, _result.Plates, _settings, _result.Outline, _result.Openings);
             AssignZoneIds(_patchCandidateZones);
             RefreshPatchFrameZones();
             _result.Zones = _patchCandidateZones.ToList();

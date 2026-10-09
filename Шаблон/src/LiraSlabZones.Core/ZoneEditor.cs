@@ -59,6 +59,74 @@ namespace LiraSlabZones.Core
             zone.Comment = "шаг изменён в предпросмотре";
         }
 
+        public static int RemoveZonesWithoutRequiredElements(
+            IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
+            AnalysisSettings? settings, IList<Point3>? slabOutline = null,
+            IList<OpeningInfo>? openings = null)
+        {
+            if (zones == null || plates == null || plates.Count == 0) return 0;
+
+            var requiredByLayer = zones.Select(zone => zone.Layer).Distinct().ToDictionary(layer => layer,
+                layer =>
+                {
+                    var background = BackgroundAs(settings, layer);
+                    return plates.Where(plate => plate.Rebar.Ok &&
+                        plate.Rebar.Get(layer) - background >
+                        MosaicBuilder.PositiveResidualToleranceCm2PerM).ToList();
+                });
+            var maximumGapByLayer = zones.GroupBy(zone => zone.Layer).ToDictionary(group => group.Key,
+                group => Math.Max(0.05, group.Max(zone => Math.Max(0, zone.BarStepMm) / 1000.0)));
+            var removed = 0;
+            for (var i = zones.Count - 1; i >= 0; i--)
+            {
+                var zone = zones[i];
+                if (zone.Contour == null || zone.Contour.Count < 3) continue;
+
+                var background = BackgroundAs(settings, zone.Layer);
+                var requiredPlates = requiredByLayer[zone.Layer];
+                var supportingIds = new HashSet<int>();
+                var maximumGapM = maximumGapByLayer[zone.Layer];
+                var zoneBounds = Bounds(zone.Contour);
+                var otherZones = zones.Where(candidate =>
+                    !ReferenceEquals(candidate, zone)).ToList();
+                foreach (var plate in requiredPlates)
+                {
+                    if (ZoneCoverageRules.IntersectsElementFootprint(zone, plate, slabOutline))
+                    {
+                        supportingIds.Add(plate.Id);
+                        continue;
+                    }
+
+                    var plateBounds = PlateBounds(plate);
+                    if (plateBounds.MaxX < zoneBounds.MinX - maximumGapM ||
+                        plateBounds.MinX > zoneBounds.MaxX + maximumGapM ||
+                        plateBounds.MaxY < zoneBounds.MinY - maximumGapM ||
+                        plateBounds.MinY > zoneBounds.MaxY + maximumGapM)
+                        continue;
+
+                    var requiredAs = plate.Rebar.Get(zone.Layer) - background;
+                    if (ZoneCoverageRules.CoversOrBridgesGap(
+                            zones, plate, zone.Layer, requiredAs, slabOutline, openings,
+                            allowOverlappingZones: true) &&
+                        !ZoneCoverageRules.CoversOrBridgesGap(
+                            otherZones, plate, zone.Layer, requiredAs, slabOutline, openings,
+                            allowOverlappingZones: true))
+                        supportingIds.Add(plate.Id);
+                }
+
+                if (supportingIds.Count == 0)
+                {
+                    zones.RemoveAt(i);
+                    removed++;
+                    continue;
+                }
+
+                zone.NodeIds = supportingIds.OrderBy(id => id).ToList();
+                zone.ElementId = zone.NodeIds[0];
+            }
+            return removed;
+        }
+
         public static int ApplyOuterBoundaryCuts(
             IList<AdditionalZone> zones, IList<LiraPlateElement> plates,
             IList<Point3> outline, double jointGapMm)
